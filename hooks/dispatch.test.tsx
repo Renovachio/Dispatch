@@ -2,13 +2,14 @@ import { expect, test } from 'claude-code/testing'
 
 import { mergeLayers, type Config } from '../src/config'
 import { dollars, tierOf, weightedTokens } from '../src/cost'
-import { decide } from '../src/policy'
+import { decide, guardState } from '../src/policy'
+import { checkSchedule, cronLine, isDue, nextSlot, previousSlot, type Schedule } from '../src/schedule'
 import { canonical, checkPlan, escalate, newRun, ownsPath, parsePorcelain, scopeViolations, setPlan, taskFromDescription } from '../src/state'
 
 // A config close to config/defaults.json, inline so the pure tests need no IO.
 const CFG = {
   locked: [],
-  storage: { home: '~/.dispatch2', project: '.dispatch2' },
+  storage: { home: '~/.dispatch', project: '.dispatch' },
   tiers: { scout: 'haiku', researcher: 'sonnet', builder: 'sonnet', writer: 'sonnet', operator: 'sonnet', reviewer: 'sonnet', reviewer_risky: 'opus', planner: 'opus' },
   escalation: ['haiku', 'sonnet', 'opus'],
   budgets: { small: 150000, medium: 600000, large: 2000000 },
@@ -120,13 +121,16 @@ test('policy: data rule, shell and file scope', async () => {
 
 // ---------- through the engine ----------
 
-function stubEngine(on: Parameters<Parameters<typeof test>[1]>[1], files: Map<string, string>, listed: string[] = [], git: string[] = []) {
+function stubEngine(on: Parameters<Parameters<typeof test>[1]>[1], files: Map<string, string>, listed: string[] = [], git: string[] = [], clock = { now: Date.UTC(2026, 10, 12, 10, 0, 0) }) {
   on('process.run', () => ({ value: { exitCode: 0, stdout: git.join('\n'), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
   on('tool.register', () => ({ value: undefined }))
   on('command.register', () => ({ value: { command: 'dispatch-panel' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('env.get', (_, e) => ({ value: (e as { name: string }).name === 'HOME' ? '/h' : undefined }))
-  on('clock.now', () => ({ value: Date.UTC(2026, 10, 12, 10, 0, 0) }))
+  on('clock.now', () => ({ value: clock.now }))
+  on('command.list', () => ({ value: [] }))
+  on('ui.notify', () => ({ value: { sent: true } }))
+  on('ui.status', () => ({ value: undefined }))
   on('session.cwd', () => ({ value: '/p' }))
   on('session.model', () => ({ value: 'claude-sonnet-5-5' }))
   const isDefaults = (p: string) => p.endsWith('/config/defaults.json')
@@ -191,13 +195,13 @@ test('a run: start, plan, tiered spawn, denied outward call, approved call', asy
 
   const status = parse(await $.tool.call({ tool: 'mcp__dispatch__run', action: 'finish', status: 'done', summary: 'posted' }))
   expect(status.status).toBe('done')
-  expect([...files.keys()].some(k => k.startsWith('/p/.dispatch2/runs/') && k.endsWith('/run.json'))).toBe(true)
+  expect([...files.keys()].some(k => k.startsWith('/p/.dispatch/runs/') && k.endsWith('/run.json'))).toBe(true)
 })
 
 test('policy: protected state files, path traversal, operator shell needs approval', async () => {
   const run = sampleRun()
   expect(decide(run, CFG, { tool: 'Write', agentId: 'w', input: { file_path: `${run.dir}/run.json` } }).allow).toBe(false)
-  expect(decide(run, CFG, { tool: 'Write', agentId: 'b', input: { file_path: '/p/.dispatch2/config.json' } }).allow).toBe(false)
+  expect(decide(run, CFG, { tool: 'Write', agentId: 'b', input: { file_path: '/p/.dispatch/config.json' } }).allow).toBe(false)
   expect(decide(run, CFG, { tool: 'Edit', agentId: 'b', input: { file_path: '/p/src/feature/../../secrets.ts' } }).allow).toBe(false)
   expect(decide(run, CFG, { tool: 'Write', agentId: 'w', input: { file_path: `${run.dir}/../x.md` } }).allow).toBe(false)
   expect(decide(run, CFG, { tool: 'Bash', agentId: 'b', input: { command: `cat ${run.dir}/run.json` } }).allow).toBe(false)
@@ -257,7 +261,7 @@ test('inline tasks: small runs only, builder or writer only; the lead edits owne
   expect(checkPlan([{ id: 'a', role: 'operator', title: 'x', inline: true }], 'small').length).toBe(1)
   expect(checkPlan([{ id: 'a', role: 'builder', title: 'x', paths: ['src'], inline: true }], 'small').length).toBe(0)
 
-  let run = newRun({ now: 0, objective: 'o', title: 'Inline', size: 'small', project: '/p', runsDir: '/p/.dispatch2/runs', cfg: CFG, leadModel: 'sonnet' })
+  let run = newRun({ now: 0, objective: 'o', title: 'Inline', size: 'small', project: '/p', runsDir: '/p/.dispatch/runs', cfg: CFG, leadModel: 'sonnet' })
   run = setPlan(run, [{ id: 't1', role: 'builder', title: 'Build', paths: ['textutil.py'], inline: true }], CFG, 0)
   const edit = () => decide(run, CFG, { tool: 'Write', input: { file_path: '/p/textutil.py' } }).allow
   expect(edit()).toBe(false)
@@ -273,7 +277,7 @@ test('scope check: porcelain parsing and files no task owns', async () => {
   expect(parsePorcelain(' M src/a.ts\n?? "new file.md"\nR  old.ts -> src/b.ts\n')).toEqual(['src/a.ts', 'new file.md', 'src/b.ts'])
   const run = sampleRun()
   run.baseline = ['notes.txt']
-  expect(scopeViolations(['src/feature/x.ts', 'notes.txt', '.dispatch2/runs/r/run.json', 'README.md'], run, '.dispatch2')).toEqual(['README.md'])
+  expect(scopeViolations(['src/feature/x.ts', 'notes.txt', '.dispatch/runs/r/run.json', 'README.md'], run, '.dispatch')).toEqual(['README.md'])
 })
 
 test('data rule: an agent that read internal content loses web tools', async () => {
@@ -306,4 +310,121 @@ test('engine: a task that changed a file nobody owns fails the scope check; read
   const done = parse(await $.tool.call({ tool: 'mcp__dispatch__run', action: 'task', task: 't1', status: 'done' }))
   expect(done.scope_violations).toEqual(['package.json'])
   expect((done.retry as { allowed: boolean }).allowed).toBe(true)
+})
+
+// ---------- schedules ----------
+
+const H = 3_600_000
+const sched = (over: Partial<Schedule>): Schedule => ({ id: 's', request: 'weekly status', every: 'weekly', at: '09:00', day: 1, enabled: true, createdAt: Date.UTC(2026, 10, 12, 10), ...over })
+
+test('schedules: due times in local time, missed slots run once, cron lines', async () => {
+  const s = sched({}) // Mondays 09:00 at UTC+1; 2026-11-12 is a Thursday
+  const mon = Date.UTC(2026, 10, 16, 8) // Monday 09:00 local
+  expect(isDue(s, mon - 60_000, 60)).toBe(false)
+  expect(isDue(s, mon, 60)).toBe(true)
+  expect(previousSlot(s, mon + H, 60)).toBe(mon)
+  expect(nextSlot(s, mon, 60)).toBe(mon + 7 * 24 * H)
+  expect(isDue({ ...s, lastRunAt: mon }, mon + H, 60)).toBe(false)
+  expect(isDue({ ...s, lastRunAt: mon }, mon + 15 * 24 * H, 60)).toBe(true) // two missed Mondays: due, once
+  expect(isDue({ ...s, enabled: false }, mon, 60)).toBe(false)
+  const wk = sched({ every: 'weekdays', day: undefined })
+  expect(isDue({ ...wk, lastRunAt: Date.UTC(2026, 10, 13, 9) }, Date.UTC(2026, 10, 15, 12), 0)).toBe(false) // nothing on the weekend
+  expect(cronLine(s, '/r/bin/run', '/p q')).toBe("0 9 * * 1 '/r/bin/run' '/p q'")
+  expect(cronLine(sched({ every: 'monthly', day: 28, at: '17:30' }), '/r', '/p')).toBe("30 17 28 * * '/r' '/p'")
+  expect(checkSchedule({ id: 'Bad Id', request: '', every: 'hourly', at: '9am' }, []).length).toBe(4)
+  expect(checkSchedule({ id: 'ok', request: 'x', every: 'monthly', at: '09:00', day: 31 }, [])).toEqual(['day: 1 to 28 for monthly'])
+  expect(checkSchedule({ id: 's', request: 'x', every: 'daily', at: '09:00' }, [s])).toEqual(['id s already exists: remove it first'])
+})
+
+test('policy: schedules and run state are written only by the mod, even with no run active', async () => {
+  expect(guardState('Write', { file_path: '/p/.dispatch/schedules.json' }).allow).toBe(false)
+  expect(guardState('Edit', { file_path: '/p/.dispatch/x/../schedules.json' }).allow).toBe(false)
+  expect(guardState('Bash', { command: 'echo [] > .dispatch/schedules.json' }).allow).toBe(false)
+  expect(guardState('Write', { file_path: '/p/notes.md' }).allow).toBe(true)
+  expect(guardState('Edit', { file_path: '/p/.dispatch/runs/r1/run.json' }).allow).toBe(false)
+  expect(guardState('Bash', { command: "sed -i '' s/false/true/ .dispatch/runs/r1/run.json" }).allow).toBe(false)
+  expect(guardState('Bash', { command: 'python3 gen.py > .dispatch/runs/r1/t1/out.md' }).allow).toBe(true)
+  expect(guardState('Write', { file_path: '/p/tools/run.json' }).allow).toBe(true)
+  const run = sampleRun()
+  expect(decide(run, CFG, { tool: 'Write', agentId: 'w', input: { file_path: '/p/.dispatch/schedules.json' } }).allow).toBe(false)
+})
+
+test('engine: a schedule is created only with the person, runs headless, queues its post, and waits for approval', async ($, on) => {
+  const files = new Map<string, string>()
+  const listed: string[] = []
+  const clock = { now: Date.UTC(2026, 10, 12, 10) }
+  let interactive = true
+  const answers: string[] = []
+  stubEngine(on, files, listed, [], clock)
+  on('agent.spawn', (_, e) => ({ model: e.model ?? 'inherit', agentId: 'a-op' }))
+  on('tool.call', (_, e) => {
+    if (e.tool !== 'AskUserQuestion') return { result: 'ok' }
+    if (!interactive) throw new Error('no one to ask')
+    const qs = (e as unknown as { questions: { question: string }[] }).questions
+    return { result: { questions: qs, answers: Object.fromEntries(qs.map(q => [q.question, answers.shift() ?? 'Cancel'])) } }
+  })
+  await $.session.start({ cwd: '/p', surface: 'terminal', isInteractive: true })
+  const run = (args: Record<string, unknown>) => $.tool.call({ tool: 'mcp__dispatch__run', ...args } as never).then(parse)
+
+  // The model cannot write the schedules file, run or no run.
+  const sneaky = await $.tool.call({ tool: 'Write', file_path: '/p/.dispatch/schedules.json', content: '[]' } as never)
+  expect(String((sneaky as { deny?: string }).deny ?? '')).toMatch(/schedules/)
+
+  answers.push('Create schedule')
+  const added = await run({ action: 'schedule', op: 'add', id: 'standup', request: 'Daily standup note to #team', every: 'daily', at: '09:00' })
+  expect(added.created).toBe(true)
+  expect(String((added.unattended as { crontab_line: string }).crontab_line)).toMatch(/^0 9 \* \* \* .*bin\/dispatch-run-due' '\/p'$/)
+  expect(JSON.parse(files.get('/p/.dispatch/schedules.json')!).length).toBe(1)
+  expect(files.get('/p/.dispatch/.gitignore')).toMatch(/schedules\.json/)
+  expect((await run({ action: 'schedule', op: 'due' })).due).toEqual([])
+
+  // A day later, headless: nobody can be asked.
+  clock.now += 25 * H
+  interactive = false
+  expect(((await run({ action: 'schedule', op: 'due' })).due as unknown[]).length).toBe(1)
+  expect((await run({ action: 'schedule', op: 'add', id: 'x', request: 'y', every: 'daily', at: '10:00' })).created).toBe(false)
+  const started = await run({ action: 'start', objective: 'Daily standup note to #team', title: 'Standup', size: 'small', schedule: 'standup' })
+  listed.push(String(started.run))
+  expect((await run({ action: 'schedule', op: 'due' })).due).toEqual([])
+  await run({ action: 'plan', tasks: [{ id: 't1', role: 'writer', title: 'Draft', inline: true }, { id: 't2', role: 'operator', title: 'Post', depends_on: ['t1'] }] })
+  const queued = await run({ action: 'approve', task: 't2', actions: [{ tool: 'mcp__slack__send_message', args: { channel: 'C1', text: 'standup' }, summary: 'Post' }] })
+  expect((queued.approvals as { approved: boolean }[])[0].approved).toBe(false)
+  expect(String(queued.note)).toMatch(/Do not spawn the operator/)
+  expect((await run({ action: 'finish', status: 'done', summary: 'drafted' })).status).toBe('waiting')
+  expect(((await run({ action: 'list' })).runs as { waiting_for_approval?: number }[])[0].waiting_for_approval).toBe(1)
+
+  // Back at the keyboard: the person approves the exact queued post, and only the operator sends it.
+  interactive = true
+  const resumed = await run({ action: 'resume', run: 'latest' })
+  expect((resumed.queued as unknown[]).length).toBe(1)
+  answers.push('Approve')
+  const cleared = await run({ action: 'approve_queued' })
+  expect((cleared.approvals as { approved: boolean; args: unknown }[])[0]).toEqual({ id: 't2-a1', task: 't2', tool: 'mcp__slack__send_message', approved: true, args: { channel: 'C1', text: 'standup' } })
+  await $.agent.spawn({ prompt: 'post', subagentType: 'dispatch:operator', description: '[t2] Post' })
+  const posted = await $.tool.call({ tool: 'mcp__slack__send_message', channel: 'C1', text: 'standup', agentId: 'a-op' } as never)
+  expect((posted as { result?: unknown }).result).toBe('ok')
+  expect((await run({ action: 'finish', status: 'done', summary: 'posted' })).status).toBe('done')
+})
+
+test('engine: resume skips run folders an older Dispatch left behind', async ($, on) => {
+  const files = new Map<string, string>()
+  const listed: string[] = []
+  stubEngine(on, files, listed)
+  on('tool.call', () => ({ result: 'ok' }))
+  await $.session.start({ cwd: '/p', surface: 'terminal', isInteractive: true })
+  const started = parse(await $.tool.call({ tool: 'mcp__dispatch__run', action: 'start', objective: 'x', title: 'New run', size: 'small' }))
+  await $.tool.call({ tool: 'mcp__dispatch__run', action: 'finish', status: 'done', summary: 's' })
+  files.set('/p/.dispatch/runs/zzzz-old/run.json', JSON.stringify({ id: 'zzzz-old', steps: [] }))
+  listed.push('zzzz-old', String(started.run))
+  const resumed = parse(await $.tool.call({ tool: 'mcp__dispatch__run', action: 'resume', run: 'latest' }))
+  expect(resumed.run).toBe(started.run)
+})
+
+test('engine: a session in a project Dispatch never ran in writes nothing', async ($, on) => {
+  const files = new Map<string, string>()
+  stubEngine(on, files)
+  on('tool.call', () => ({ result: 'ok' }))
+  await $.session.start({ cwd: '/p', surface: 'terminal', isInteractive: true })
+  await new Promise(resolve => setTimeout(resolve, 20))
+  expect([...files.keys()]).toEqual([])
 })

@@ -1,4 +1,4 @@
-// Run state: a plain JSON document per run, persisted under ~/.dispatch2/runs/<id>/run.json.
+// Run state: a plain JSON document per run, persisted under <project>/.dispatch/runs/<id>/run.json.
 // Pure transition functions first (tested), IO helpers after.
 import type { EngineInterface } from 'claude-code'
 import type { Config } from './config'
@@ -226,12 +226,33 @@ export function runUsage(run: Run, cfg: Config) {
 
 // ---------- IO ----------
 
-/** Runs live in the project (`.dispatch2/runs/`, git-ignored) so agents write there without prompts. */
-export async function runsDir($: EngineInterface, cfg: Config): Promise<string> {
-  const dir = `${await $.session.cwd()}/${cfg.storage.project}`
+/** Personal files in the project's Dispatch folder: never committed. */
+const PERSONAL = ['runs/', 'config.local.json', 'schedules.json']
+
+/** The project's Dispatch folder (no side effects). */
+export async function projectDir($: EngineInterface, cfg: Config): Promise<string> {
+  return `${await $.session.cwd()}/${cfg.storage.project}`
+}
+
+/** Create the folder's .gitignore so personal files are never committed. Call before writing into it. */
+export async function ensureProjectDir($: EngineInterface, cfg: Config): Promise<string> {
+  const dir = await projectDir($, cfg)
   const ignore = `${dir}/.gitignore`
-  if (!(await $.fs.exists(ignore))) await $.fs.write(ignore, 'runs/\nconfig.local.json\n')
-  return `${dir}/runs`
+  const prev = (await $.fs.exists(ignore)) ? await $.fs.read(ignore) : ''
+  const missing = PERSONAL.filter(line => !prev.split('\n').includes(line))
+  if (missing.length) await $.fs.write(ignore, `${prev}${prev && !prev.endsWith('\n') ? '\n' : ''}${missing.join('\n')}\n`)
+  return dir
+}
+
+/** Runs live in the project (`.dispatch/runs/`, git-ignored) so agents write there without prompts. */
+export async function runsDir($: EngineInterface, cfg: Config): Promise<string> {
+  return `${await ensureProjectDir($, cfg)}/runs`
+}
+
+/** A run.json written by this version (older Dispatch systems used the same folder name). */
+export function isRun(value: unknown): value is Run {
+  const r = value as Run
+  return !!r && typeof r === 'object' && typeof r.id === 'string' && Array.isArray(r.order) && !!r.tasks && typeof r.tasks === 'object' && !!r.lead && Array.isArray(r.approvals)
 }
 
 export async function saveRun($: EngineInterface, run: Run): Promise<void> {
@@ -240,17 +261,17 @@ export async function saveRun($: EngineInterface, run: Run): Promise<void> {
 
 export async function loadRun($: EngineInterface, dir: string): Promise<Run | undefined> {
   try {
-    return JSON.parse(await $.fs.read(`${dir}/run.json`)) as Run
+    const run = JSON.parse(await $.fs.read(`${dir}/run.json`)) as Run
+    return isRun(run) ? run : undefined
   } catch {
     return undefined
   }
 }
 
 export async function listRuns($: EngineInterface, cfg: Config): Promise<string[]> {
-  const dir = await runsDir($, cfg)
   let entries: Awaited<ReturnType<EngineInterface['fs']['list']>>
   try {
-    entries = await $.fs.list(dir)
+    entries = await $.fs.list(`${await projectDir($, cfg)}/runs`)
   } catch {
     return []
   }
@@ -259,4 +280,16 @@ export async function listRuns($: EngineInterface, cfg: Config): Promise<string[
     .map(e => e.name)
     .sort()
     .reverse()
+}
+
+/** Up to `limit` readable runs, newest first (folders an older Dispatch left are skipped). */
+export async function recentRuns($: EngineInterface, cfg: Config, limit: number): Promise<Run[]> {
+  const dir = `${await projectDir($, cfg)}/runs`
+  const out: Run[] = []
+  for (const id of await listRuns($, cfg)) {
+    const r = await loadRun($, `${dir}/${id}`)
+    if (r) out.push(r)
+    if (out.length >= limit) break
+  }
+  return out
 }

@@ -29,15 +29,29 @@ Adaptive multi-agent orchestration for Claude Code. Give it any request (code, P
 
 ## Commands
 
-`/dispatch:dispatch <request>` · `… status` · `… resume [run]` · `… runs` · `… learn <text>` · `… playbooks`
+`/dispatch:dispatch <request>` · `… status` · `… resume [run]` · `… runs` · `… learn <text>` · `… playbooks` · `… schedule [what and when]` · `… run-due` · `… approvals`
+
+## Scheduled runs
+
+```
+/dispatch:dispatch schedule the weekly status every Monday at 9
+```
+
+- You confirm every new schedule in a dialog the mod opens. The model can't create or edit schedules, and agents can't write `.dispatch/schedules.json`, even outside a run.
+- Dispatch replies with a crontab line. Add it with `crontab -e` to run the schedule while Claude Code is closed. Cron starts `bin/dispatch-run-due <project>`, a headless `claude -p` run. Without the line, a due schedule is announced the next time you open a session in the project.
+- A scheduled run does all the work up to the outward step, such as posting to Slack. Nobody is there to approve, so the action is **queued**: the run ends as `waiting`, and the next session you open in the project tells you so (plus a desktop notification where one can be shown). `/dispatch:dispatch approvals` shows you each queued action with its exact content. Only approved actions are sent, once, by the operator.
+- If several slots were missed (laptop asleep), the schedule runs once, not once per slot. Pausing and resuming skips the slots missed while paused.
+- On macOS, cron may need Full Disk Access (System Settings → Privacy & Security) to reach projects in `~/Documents`. The runner logs to `.dispatch/runs/scheduled.log`.
+- Headless runs only get the tools granted in `bin/dispatch-run-due` and in the project's permission settings. Add the read tools of the connectors your playbook needs to `.claude/settings.json`.
 
 ## Files it keeps
 
-- `<project>/.dispatch2/runs/<id>/`: run state (`run.json`), `context.md`, each task's deliverables. Git-ignored automatically, so personal and never committed. Keeping them in the project means agents write without permission prompts.
-- `<project>/.dispatch2/learnings.md` and `playbooks/`: team knowledge, committed and reviewed like code.
-- Config layers, later ones overriding earlier ones: `config/defaults.json` → team file (`$DISPATCH_TEAM_CONFIG` or `config/team.json`) → `<project>/.dispatch2/config.json` → `~/.dispatch2/config.json`. A layer can `lock` keys (for example `"locked": ["budgets.large", "outward.allow_actions"]`).
+- `<project>/.dispatch/runs/<id>/`: run state (`run.json`), `context.md`, each task's deliverables. Git-ignored automatically, so personal and never committed. Keeping them in the project means agents write without permission prompts.
+- `<project>/.dispatch/schedules.json`: your schedules. Personal and git-ignored, so teammates don't run each other's schedules.
+- `<project>/.dispatch/learnings.md` and `playbooks/`: team knowledge, committed and reviewed like code.
+- Config layers, later ones overriding earlier ones: `config/defaults.json` → team file (`$DISPATCH_TEAM_CONFIG` or `config/team.json`) → `<project>/.dispatch/config.json` → `~/.dispatch/config.json`. A layer can `lock` keys (for example `"locked": ["budgets.large", "outward.allow_actions"]`).
 
-(`.dispatch2` is the name while the old Dispatch skill is still installed. It becomes `.dispatch` when the old one is retired.)
+Run folders left by the older Dispatch (Orchestrator) in a project's `.dispatch/` are ignored.
 
 ## Install
 

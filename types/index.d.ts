@@ -53,9 +53,12 @@ export type Approval = {
   summary: string
   approved: boolean
   used: boolean
+  /** Proposed while nobody could be asked (a scheduled or headless run): waits for the person. */
+  queued?: boolean
 }
 
-export type RunStatus = 'active' | 'paused' | 'done' | 'failed' | 'cancelled'
+/** waiting: finished, with outward actions queued for the person to approve. */
+export type RunStatus = 'active' | 'paused' | 'done' | 'failed' | 'cancelled' | 'waiting'
 
 export type Run = {
   id: string
@@ -83,6 +86,28 @@ export type Run = {
   leadTainted?: boolean
   /** Files already changed in git when the run started (scope check baseline); absent outside git. */
   baseline?: string[]
+  /** Started by this schedule (its id). */
+  schedule?: string
+}
+
+export type Cadence = 'daily' | 'weekdays' | 'weekly' | 'monthly'
+
+/** A recurring run, kept in the project's `.dispatch/schedules.json` (personal, git-ignored). */
+export type Schedule = {
+  id: string
+  /** The request, as the person would type it after /dispatch. */
+  request: string
+  /** A saved playbook in `.dispatch/playbooks/` the run follows, if any. */
+  playbook?: string
+  every: Cadence
+  /** Local time, "HH:MM". */
+  at: string
+  /** weekly: 0 (Sunday) to 6; monthly: 1 to 28. */
+  day?: number
+  enabled: boolean
+  createdAt: number
+  lastRunAt?: number
+  lastRunId?: string
 }
 
 declare module 'claude-code' {

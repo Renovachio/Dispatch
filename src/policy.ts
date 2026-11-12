@@ -45,10 +45,25 @@ export function normalize(path: string): string {
 
 /** Files that hold Dispatch's own state or policy: no agent may write them. */
 export function isProtected(file: string): boolean {
-  return /(^|\/)run\.json$/.test(file) || /(^|\/)\.dispatch2?\/config\.json$/.test(file) || /(^|\/)\.dispatch2?\/(learnings\.md|playbooks\/)/.test(file)
+  return /(^|\/)run\.json$/.test(file) || /(^|\/)\.dispatch\/(config\.json|schedules\.json|learnings\.md|playbooks\/)/.test(file)
 }
 
-const PROTECTED_IN_SHELL = /run\.json|\.dispatch2?\/(config\.json|learnings\.md|playbooks)/
+const PROTECTED_IN_SHELL = /run\.json|\.dispatch\/(config\.json|schedules\.json|learnings\.md|playbooks)/
+
+/**
+ * Guarded even when no run is active: schedules start unattended runs, and a waiting run keeps its
+ * queued approvals on disk for days. Only the mod writes these files.
+ */
+export function guardState(tool: string, input: Record<string, unknown>): Decision {
+  const file = normalize(String(input.file_path ?? input.notebook_path ?? ''))
+  const isWrite = tool === 'Edit' || tool === 'Write' || tool === 'NotebookEdit' || tool === 'MultiEdit'
+  const touches =
+    (isWrite && (/(^|\/)\.dispatch\/schedules\.json$/.test(file) || /(^|\/)\.dispatch\/runs\/[^/]+\/run\.json$/.test(file))) ||
+    (tool === 'Bash' && /schedules\.json|runs\/[^\s'"]+\/run\.json/.test(String(input.command ?? '')))
+  return touches
+    ? { allow: false, reason: 'Dispatch: schedules and run state change only through /dispatch:dispatch, which asks the person.' }
+    : { allow: true }
+}
 
 export function isReadMcp(tool: string, cfg: Config): boolean {
   const name = mcpToolName(tool)

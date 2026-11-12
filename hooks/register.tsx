@@ -3,10 +3,11 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Role, Run, Size, TaskStatus } from '../types'
+import type { Role, Run, Schedule, Size, TaskStatus } from '../types'
 import { loadConfig, type Config } from '../src/config'
 import { addUsage, dollars, formatTokens, tierOf, zeroUsage } from '../src/cost'
-import { callArgs, decide, destinationAllowed, isInternalRead, isOwnTool } from '../src/policy'
+import { callArgs, decide, destinationAllowed, guardState, isInternalRead, isOwnTool } from '../src/policy'
+import { checkSchedule, cronLine, describe, isDue, loadSchedules, localOffset, nextSlot, saveSchedules, type ScheduleInput } from '../src/schedule'
 import {
   canonical,
   checkPlan,
@@ -15,6 +16,8 @@ import {
   loadRun,
   log,
   newRun,
+  projectDir,
+  recentRuns,
   parsePorcelain,
   runsDir,
   runUsage,
@@ -65,14 +68,28 @@ async function gitChanged($: EngineInterface, project: string): Promise<string[]
   }
 }
 
-/** Ask the person directly (never the model). A dismissed or unanswerable dialog counts as a no. */
-async function ask($: EngineInterface, question: string, options: { options: string[]; header: string }): Promise<string> {
+/**
+ * Ask the person directly (never the model). Resolves their pick ('' when dismissed), or null when
+ * nobody can be asked (a headless or scheduled run). Callers treat both as "no" unless they queue.
+ */
+async function ask($: EngineInterface, question: string, options: { options: string[]; header: string }): Promise<string | null> {
   try {
     return await $.ui.ask(question, options)
   } catch {
-    return ''
+    return null
   }
 }
+
+async function notify($: EngineInterface, text: string): Promise<void> {
+  try {
+    await $.ui.notify(text, { title: 'Dispatch' })
+  } catch {
+    // No surface to notify (headless); the next session start shows it.
+  }
+}
+
+const RUNNER = 'bin/dispatch-run-due'
+
 
 const isActive = (run: Run | null): run is Run => !!run && (run.status === 'active' || run.status === 'paused')
 
@@ -86,12 +103,16 @@ const TOOL_DESCRIPTION = `Dispatch run state. Only use while running the /dispat
 - resume {run?} → reattach a run (id, part of an id, or latest)
 - list → recent runs
 - learn {kind: learning|playbook, text, name?} → save to the project's Dispatch folder
+- schedule {op: add, id, request, every: daily|weekdays|weekly|monthly, at: "HH:MM", day?, playbook?} → asks the person, returns a crontab line for unattended runs
+- schedule {op: list|due} · schedule {op: remove|pause|resume, id}
+- start {..., schedule: id} → a run for a due schedule. With nobody to ask, approve queues actions and finish leaves the run "waiting"
+- approve_queued → on a resumed waiting run: asks the person for each queued action; returns ids approved/declined
 Spawn role agents as subagent_type "dispatch:<role>" with description "[<task id>] <title>".`
 
 const INPUT_SCHEMA = {
   type: 'object',
   properties: {
-    action: { type: 'string', enum: ['start', 'plan', 'task', 'approve', 'status', 'finish', 'resume', 'list', 'learn'] },
+    action: { type: 'string', enum: ['start', 'plan', 'task', 'approve', 'approve_queued', 'status', 'finish', 'resume', 'list', 'learn', 'schedule'] },
     objective: { type: 'string' },
     title: { type: 'string' },
     size: { type: 'string', enum: SIZES },
@@ -106,6 +127,14 @@ const INPUT_SCHEMA = {
     kind: { type: 'string', enum: ['learning', 'playbook'] },
     text: { type: 'string' },
     name: { type: 'string' },
+    op: { type: 'string', enum: ['add', 'list', 'due', 'remove', 'pause', 'resume'] },
+    schedule: { type: 'string' },
+    id: { type: 'string' },
+    request: { type: 'string' },
+    playbook: { type: 'string' },
+    every: { type: 'string', enum: ['daily', 'weekdays', 'weekly', 'monthly'] },
+    at: { type: 'string' },
+    day: { type: 'number' },
   },
   required: ['action'],
 }
@@ -132,6 +161,102 @@ function report(run: Run, c: Config) {
       usd: dollars(a.usage, a.tier, c),
     })),
     lead: { tier: run.leadTier, usd: dollars(run.lead, run.leadTier, c) },
+  }
+}
+
+async function handleSchedule($: EngineInterface, c: Config, e: Record<string, unknown>, now: number): Promise<unknown> {
+  const op = String(e.op ?? 'list')
+  const list = await loadSchedules($, c)
+  const offset = localOffset(now)
+  const view = (s: Schedule) => ({
+    id: s.id,
+    request: s.request,
+    playbook: s.playbook,
+    when: describe(s),
+    enabled: s.enabled,
+    due: isDue(s, now, offset),
+    next: s.enabled ? new Date(nextSlot(s, now, offset) ?? now).toISOString() : undefined,
+    last_run: s.lastRunId,
+  })
+  if (op === 'list') return { schedules: list.map(view) }
+  if (op === 'due') return { due: list.filter(s => isDue(s, now, offset)).map(view) }
+
+  if (op === 'add') {
+    const input: ScheduleInput = {
+      id: typeof e.id === 'string' ? e.id : undefined,
+      request: typeof e.request === 'string' ? e.request : undefined,
+      playbook: typeof e.playbook === 'string' ? e.playbook : undefined,
+      every: typeof e.every === 'string' ? e.every : undefined,
+      at: typeof e.at === 'string' ? e.at : undefined,
+      day: typeof e.day === 'number' ? e.day : undefined,
+    }
+    const errors = checkSchedule(input, list)
+    if (errors.length) return { errors }
+    const s: Schedule = {
+      id: input.id!,
+      request: input.request!.trim(),
+      playbook: input.playbook,
+      every: input.every as Schedule['every'],
+      at: input.at!,
+      day: input.every === 'weekly' || input.every === 'monthly' ? input.day : undefined,
+      enabled: true,
+      createdAt: now,
+    }
+    // A schedule starts runs nobody watches, so the person creates it, never the model.
+    const answer = await ask(
+      $,
+      `Dispatch wants to run this ${describe(s)} in ${await $.session.cwd()}:\n\n"${s.request}"${s.playbook ? `\n(playbook: ${s.playbook})` : ''}\n\nScheduled runs never act outside this machine on their own: outward actions wait for your approval.`,
+      { options: ['Create schedule', 'Cancel'], header: 'Schedule' },
+    )
+    if (answer !== 'Create schedule') return { created: false, note: answer === null ? 'schedules can only be created in an interactive session' : 'the person declined' }
+    await saveSchedules($, c, [...list, s])
+    const runner = `${$.plugin.root}/${RUNNER}`
+    return {
+      created: true,
+      schedule: view(s),
+      unattended: {
+        // A development checkout (--plugin-dir) is not installed, so the headless run must be told where it is.
+        crontab_line: cronLine(s, runner, await $.session.cwd(), $.plugin.root.includes('/.claude/plugins/') ? undefined : $.plugin.root),
+        note: 'For runs while Claude Code is closed, the person adds this line with `crontab -e`. Otherwise a due schedule is announced when a session opens here.',
+      },
+    }
+  }
+
+  const s = list.find(x => x.id === e.id)
+  if (!s) return { error: `no schedule ${String(e.id)}` }
+  if (op === 'remove') {
+    await saveSchedules($, c, list.filter(x => x.id !== s.id))
+    return { removed: s.id, note: 'Remove its crontab line too, if one was added.' }
+  }
+  if (op === 'pause' || op === 'resume') {
+    // Resuming re-arms from now, so slots missed while paused do not fire.
+    await saveSchedules($, c, list.map(x => (x.id === s.id ? { ...x, enabled: op === 'resume', lastRunAt: op === 'resume' ? now : x.lastRunAt } : x)))
+    return { schedule: s.id, enabled: op === 'resume' }
+  }
+  return { error: `unknown op ${op}` }
+}
+
+/** What waits for the person in this project: due schedules and runs with queued actions. */
+async function pending($: EngineInterface): Promise<{ due: string[]; waiting: string[] }> {
+  const c = await cfg($)
+  // Read-only: a session in a project Dispatch never ran in must leave no trace.
+  if (!(await $.fs.exists(await projectDir($, c)))) return { due: [], waiting: [] }
+  const now = await $.clock.now()
+  const due = (await loadSchedules($, c)).filter(s => isDue(s, now, localOffset(now))).map(s => s.id)
+  const waiting = (await recentRuns($, c, 20)).filter(r => r.status === 'waiting').map(r => r.title)
+  return { due, waiting }
+}
+
+async function announce($: EngineInterface): Promise<void> {
+  try {
+    const { due, waiting } = await pending($)
+    const parts = []
+    if (waiting.length) parts.push(`${waiting.length} run${waiting.length > 1 ? 's' : ''} waiting for approval (/dispatch:dispatch approvals)`)
+    if (due.length) parts.push(`due: ${due.join(', ')} (/dispatch:dispatch run-due)`)
+    $.ui.status(parts.length ? `Dispatch: ${parts.join(' · ')}` : undefined)
+    if (parts.length) await notify($, parts.join('. '))
+  } catch {
+    // Never block a session over a reminder.
   }
 }
 
@@ -165,6 +290,13 @@ async function handle($: EngineInterface, e: Record<string, unknown>): Promise<u
       )
       run.allowInternalToWeb = answer === 'Allow for this run'
     }
+    if (typeof e.schedule === 'string') {
+      const list = await loadSchedules($, c)
+      const s = list.find(x => x.id === e.schedule)
+      if (!s) return { error: `no schedule ${e.schedule}` }
+      run.schedule = s.id
+      await saveSchedules($, c, list.map(x => (x.id === s.id ? { ...x, lastRunAt: now, lastRunId: run.id } : x)))
+    }
     run.baseline = await gitChanged($, run.project)
     await update($, runAtom, () => run)
     await saveRun($, run)
@@ -173,29 +305,33 @@ async function handle($: EngineInterface, e: Record<string, unknown>): Promise<u
   }
 
   if (action === 'list') {
-    const ids = (await listRuns($, c)).slice(0, 10)
-    const dir = await runsDir($, c)
-    const rows = []
-    for (const id of ids) {
-      const r = await loadRun($, `${dir}/${id}`)
-      if (r) rows.push({ id, status: r.status, size: r.size, title: r.title, usd: runUsage(r, c).usd })
-    }
+    const rows = (await recentRuns($, c, 10)).map(r => ({
+      id: r.id,
+      status: r.status,
+      size: r.size,
+      title: r.title,
+      usd: runUsage(r, c).usd,
+      waiting_for_approval: r.approvals.filter(a => a.queued).length || undefined,
+    }))
     return { runs: rows }
   }
 
   if (action === 'resume') {
-    const ids = await listRuns($, c)
+    const dir = `${await projectDir($, c)}/runs`
     const want = String(e.run ?? 'latest')
-    const id = want === 'latest' ? ids[0] : ids.find(x => x.includes(want))
-    if (!id) return { error: `no run matches ${want}` }
-    const run = await loadRun($, `${await runsDir($, c)}/${id}`)
-    if (!run) return { error: `run ${id} could not be read` }
-    const resumed = log({ ...run, status: run.status === 'paused' ? 'active' : run.status }, now, 'resume')
+    const ids = (await listRuns($, c)).filter(x => want === 'latest' || x.includes(want))
+    let run: Run | undefined
+    for (const id of ids) if ((run = await loadRun($, `${dir}/${id}`))) break
+    if (!run) return { error: `no readable run matches ${want}` }
+    const resumed = log({ ...run, status: run.status === 'paused' || run.status === 'waiting' ? 'active' : run.status, leadPending: false }, now, 'resume')
     await update($, runAtom, () => resumed)
     await saveRun($, resumed)
     void $.ui.open({ id: PANE, title: 'Dispatch' })
-    return { ...report(resumed, c), objective: resumed.objective, context_file: `${resumed.dir}/context.md`, log: resumed.log.slice(-15) }
+    const queued = resumed.approvals.filter(a => a.queued).map(a => ({ id: a.id, task: a.task, tool: a.tool, summary: a.summary }))
+    return { ...report(resumed, c), objective: resumed.objective, context_file: `${resumed.dir}/context.md`, log: resumed.log.slice(-15), queued: queued.length ? queued : undefined }
   }
+
+  if (action === 'schedule') return handleSchedule($, c, e, now)
 
   const run = await current($)
   if (!run) return { error: 'no active run: start one, or resume' }
@@ -285,21 +421,53 @@ async function handle($: EngineInterface, e: Record<string, unknown>): Promise<u
         `Dispatch wants to act outside this machine.\n\n${a.summary ?? a.tool}\n\nTool: ${a.tool}\nTarget: ${a.target ?? '—'}\nExact content:\n${shown}`,
         { options: ['Approve', 'Decline'], header: 'Approve?' },
       )
+      const queued = answer === null
       const approved = answer === 'Approve'
-      results.push({ id: aid, tool: a.tool, approved, note: approved ? undefined : answer === 'Decline' ? undefined : answer })
+      results.push({ id: aid, tool: a.tool, approved, note: queued ? 'queued: nobody can be asked now; the person approves it later' : undefined })
       await mutate($, r =>
         log(
-          { ...r, approvals: [...r.approvals, { id: aid, task: id, tool: a.tool, args, summary: a.summary ?? '', approved, used: false }] },
+          { ...r, approvals: [...r.approvals, { id: aid, task: id, tool: a.tool, args, summary: a.summary ?? '', approved, used: false, queued: queued || undefined }] },
           now,
-          `approval ${aid} ${a.tool}: ${approved ? 'approved' : 'declined'}`,
+          `approval ${aid} ${a.tool}: ${queued ? 'queued' : approved ? 'approved' : 'declined'}`,
         ),
       )
+    }
+    if (results.some(r => r.note?.startsWith('queued'))) {
+      return {
+        approvals: results,
+        note: 'Nobody can approve right now. Do not spawn the operator: write the ready-to-send content to the run folder, then finish. The run waits until the person runs /dispatch:dispatch approvals.',
+      }
     }
     return { approvals: results, note: 'Pass approved actions to dispatch:operator with their exact tool and args; any change is blocked.' }
   }
 
+  if (action === 'approve_queued') {
+    const pending = run.approvals.filter(a => a.queued)
+    if (!pending.length) return { error: 'this run has no queued actions' }
+    const results: { id: string; task: string; tool: string; approved: boolean; args?: unknown }[] = []
+    for (const a of pending) {
+      const shown = a.args.length > 1500 ? `${a.args.slice(0, 1500)}… (${a.args.length} chars)` : a.args
+      const answer = await ask(
+        $,
+        `A scheduled Dispatch run ("${run.title}") queued this action while you were away.\n\n${a.summary || a.tool}\n\nTool: ${a.tool}\nExact content:\n${shown}`,
+        { options: ['Approve', 'Decline'], header: 'Approve?' },
+      )
+      if (answer === null) return { error: 'queued actions can only be approved in an interactive session' }
+      const approved = answer === 'Approve'
+      results.push({ id: a.id, task: a.task, tool: a.tool, approved, args: approved ? JSON.parse(a.args) : undefined })
+      await mutate($, r =>
+        log({ ...r, approvals: r.approvals.map(x => (x.id === a.id ? { ...x, approved, queued: undefined } : x)) }, now, `approval ${a.id} ${a.tool}: ${approved ? 'approved' : 'declined'} (queued)`),
+      )
+    }
+    void announce($)
+    return { approvals: results, note: 'Spawn dispatch:operator with the approved actions exactly as listed here (tool and args unchanged); then finish.' }
+  }
+
   if (action === 'finish') {
-    const status = (['done', 'failed', 'cancelled'].includes(String(e.status)) ? e.status : 'done') as Run['status']
+    const asked = (['done', 'failed', 'cancelled'].includes(String(e.status)) ? e.status : 'done') as Run['status']
+    const waiting = asked === 'done' && run.approvals.some(a => a.queued)
+    const status: Run['status'] = waiting ? 'waiting' : asked
+    if (waiting) void notify($, `"${run.title}" is ready and waiting for your approval: /dispatch:dispatch approvals`)
     const next = await mutate($, r => log({ ...r, status, leadPending: true, summary: typeof e.summary === 'string' ? e.summary : r.summary }, now, `finish ${status}`))
     return { ...report(next!, c), note: "The lead's current turn is added to the cost when it ends; `status` shows the final figure." }
   }
@@ -327,9 +495,11 @@ async function handle($: EngineInterface, e: Record<string, unknown>): Promise<u
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
+    const started = await next(e)
     await $.tool.register({ name: TOOL, description: TOOL_DESCRIPTION, inputSchema: INPUT_SCHEMA, isDeferred: false })
     await $.command.register({ name: 'dispatch-panel', description: 'Open the Dispatch run panel' })
-    return next(e)
+    void announce($)
+    return started
   })
 
   on('command.run', { command: 'dispatch-panel' }, async $ => {
@@ -352,6 +522,8 @@ export const register: Register = on => {
         return { result: JSON.stringify({ error: String(err) }) }
       }
     }
+    const guard = guardState(e.tool, callArgs(raw))
+    if (!guard.allow) return { deny: guard.reason }
     const run = await current($)
     if (!isActive(run)) return next(e)
     const c = await cfg($)
@@ -493,6 +665,7 @@ export const register: Register = on => {
           )
         })}
         <Text dimColor>lead {run.leadTier} ${dollars(run.lead, run.leadTier, c).toFixed(2)}</Text>
+        {run.approvals.some(a => a.queued) && <Text color="yellow">{run.approvals.filter(a => a.queued).length} action(s) waiting for approval: /dispatch:dispatch approvals</Text>}
       </Box>
     )
   })

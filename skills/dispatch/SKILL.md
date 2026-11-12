@@ -1,6 +1,6 @@
 ---
 name: dispatch
-description: Adaptive multi-agent orchestration. Takes any request (code, PM docs, research, actions in Slack/Jira/Drive/Notion/browser), sizes it, and runs the fewest role agents with the right skills, quality gates and approvals. Invoke explicitly with /dispatch:dispatch <request>, or status, resume, runs, learn, playbooks.
+description: Adaptive multi-agent orchestration. Takes any request (code, PM docs, research, actions in Slack/Jira/Drive/Notion/browser), sizes it, and runs the fewest role agents with the right skills, quality gates and approvals. Invoke explicitly with /dispatch:dispatch <request>, or status, resume, runs, learn, playbooks, schedule, run-due, approvals.
 disable-model-invocation: true
 model: sonnet
 ---
@@ -19,12 +19,13 @@ The run tool is `mcp__dispatch__run` (`{"action": ...}`). A run's files live in 
 | `status` / `runs` | `run {action: status}` / `run {action: list}`, as a short table |
 | `resume [run]` | `run {action: resume, run}`, read its log (and `context.md` if any), continue from the first task not done |
 | `learn <text>` | `run {action: learn, kind: learning, text}` |
-| `playbooks` | list `.dispatch2/playbooks/` |
+| `playbooks` | list `.dispatch/playbooks/` |
+| `schedule …`, `run-due`, `approvals` | read [references/schedules.md](references/schedules.md) and follow it |
 | `help` or nothing | one line on what Dispatch does, then these commands |
 
 ## Run
 
-1. **Take stock.** Read `.dispatch2/learnings.md` (and a matching `.dispatch2/playbooks/<name>.md`) if present. From the skills and tools in your context, note the skills that fit (exact names) and the connectors that exist. A missing connector is a gap: say so once and plan a fallback (a local file instead of Confluence).
+1. **Take stock.** Read `.dispatch/learnings.md` (and a matching `.dispatch/playbooks/<name>.md`) if present. From the skills and tools in your context, note the skills that fit (exact names) and the connectors that exist. A missing connector is a gap: say so once and plan a fallback (a local file instead of Confluence).
 
 2. **Triage** ([references/triage.md](references/triage.md)): trivial, small, medium or large, and whether it is **risky** (outward, irreversible, high-stakes code, exec or customer audience).
    - **trivial**: answer directly. No run.

@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Runs the project's due Dispatch schedules, unattended. Called by the crontab line that
+# `/dispatch:dispatch schedule` prints:  dispatch-run-due <project folder>
+#
+# Nothing leaves the machine from here: with nobody to ask, outward actions are queued and the run
+# waits for `/dispatch:dispatch approvals`. Tools not granted below or in the project's permission
+# settings are refused, so grant the read tools of the connectors a playbook needs in
+# .claude/settings.json. DISPATCH_PLUGIN_DIR points at a development checkout that is not installed.
+set -euo pipefail
+PROJECT="${1:?usage: dispatch-run-due <project folder>}"
+cd "$PROJECT"
+
+# cron starts with a bare PATH: find claude where installers put it.
+CLAUDE="$(command -v claude || true)"
+for c in "$HOME/.local/bin/claude" "$HOME/.claude/local/claude" /opt/homebrew/bin/claude /usr/local/bin/claude; do
+  [ -n "$CLAUDE" ] && break
+  [ -x "$c" ] && CLAUDE="$c"
+done
+[ -n "$CLAUDE" ] || { echo "dispatch-run-due: claude not found" >&2; exit 127; }
+
+PLUGIN=()
+[ -n "${DISPATCH_PLUGIN_DIR:-}" ] && PLUGIN=(--plugin-dir "$DISPATCH_PLUGIN_DIR")
+
+mkdir -p .dispatch/runs
+{
+  echo "--- $(date '+%Y-%m-%d %H:%M:%S') run-due"
+  "$CLAUDE" -p "/dispatch:dispatch run-due" "${PLUGIN[@]+"${PLUGIN[@]}"}" \
+    --allowedTools Read Glob Grep Edit Write Agent mcp__dispatch__run "Bash(python3:*)" "Bash(git status:*)" "Bash(git diff:*)" \
+    < /dev/null
+} >> .dispatch/runs/scheduled.log 2>&1

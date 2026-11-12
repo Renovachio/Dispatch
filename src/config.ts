@@ -80,7 +80,7 @@ export async function loadConfig($: EngineInterface): Promise<Config> {
   const homeDir = await home($)
   const defaults = (await readJson($, `${root}/config/defaults.json`)) ?? {}
   const teamPath = (await $.env.get('DISPATCH_TEAM_CONFIG')) ?? `${root}/config/team.json`
-  const storage = (defaults.storage ?? { home: '~/.dispatch2', project: '.dispatch2' }) as Config['storage']
+  const storage = (defaults.storage ?? { home: '~/.dispatch', project: '.dispatch' }) as Config['storage']
   const cwd = await $.session.cwd()
   const layers = [
     defaults,

@@ -1,7 +1,7 @@
 {
-  "$comment": "Plugin defaults (layer 1). Override in a team file (DISPATCH_TEAM_CONFIG or <plugin>/config/team.json), project .dispatch2/config.json, then ~/.dispatch2/config.json. Keys listed in `locked` by a layer cannot be changed by later layers.",
+  "$comment": "Plugin defaults (layer 1). Override in a team file (DISPATCH_TEAM_CONFIG or <plugin>/config/team.json), project .dispatch/config.json, then ~/.dispatch/config.json. Keys listed in `locked` by a layer cannot be changed by later layers.",
   "locked": [],
-  "storage": { "home": "~/.dispatch2", "project": ".dispatch2" },
+  "storage": { "home": "~/.dispatch", "project": ".dispatch" },
   "tiers": {
     "scout": "haiku",
     "researcher": "sonnet",
