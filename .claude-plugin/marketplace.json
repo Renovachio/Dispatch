@@ -1,0 +1,7 @@
+{
+  "name": "dispatch",
+  "owner": { "name": "Dispatch maintainers" },
+  "plugins": [
+    { "name": "dispatch", "source": "./", "description": "Adaptive multi-agent orchestration for Claude Code." }
+  ]
+}
