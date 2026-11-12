@@ -58,7 +58,7 @@ Run folders left by the older Dispatch (Orchestrator) in a project's `.dispatch/
 Teammates (private repo, needs GitHub access):
 
 ```
-/plugin marketplace add <org>/dispatch
+/plugin marketplace add Renovachio/Dispatch
 /plugin install dispatch@dispatch
 ```
 

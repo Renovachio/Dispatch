@@ -2,5 +2,10 @@
   "name": "dispatch",
   "version": "0.1.0",
   "description": "Adaptive multi-agent orchestration: triage any request, run the right role agents with the right skills, gate quality and outward actions, track cost.",
+  "author": {
+    "name": "Carlos"
+  },
+  "license": "UNLICENSED",
+  "icon": "./.claude-plugin/icon.png",
   "types": "./types/index.d.ts"
 }

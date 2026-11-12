@@ -1,7 +1,17 @@
 {
   "name": "dispatch",
-  "owner": { "name": "Dispatch maintainers" },
+  "owner": {
+    "name": "Dispatch maintainers"
+  },
+  "description": "Private marketplace for Dispatch, the adaptive multi-agent orchestration plugin for Claude Code.",
   "plugins": [
-    { "name": "dispatch", "source": "./", "description": "Adaptive multi-agent orchestration for Claude Code." }
+    {
+      "name": "dispatch",
+      "source": "./",
+      "description": "Adaptive multi-agent orchestration for Claude Code.",
+      "author": {
+        "name": "Carlos"
+      }
+    }
   ]
 }
