@@ -2,7 +2,7 @@
 // Pure transition functions first (tested), IO helpers after.
 import type { EngineInterface } from 'claude-code'
 import type { Config } from './config'
-import type { Approval, Role, Run, Size, Task, Tier } from '../types'
+import type { Approval, Role, Run, Size, Task, Tier, Usage } from '../types'
 import { addUsage, dollars, tierOf, weightedTokens, zeroUsage } from './cost'
 
 export type { AgentRec, Approval, Run, RunStatus, Task, TaskStatus } from '../types'
@@ -222,9 +222,23 @@ export function taskFromDescription(description: string): string | undefined {
   return /^\s*\[([A-Za-z0-9_.-]+)\]/.exec(description)?.[1]
 }
 
+/** The lead's usage split by tier; older runs only know the latest tier. */
+export function leadUsageByTier(run: Run): [Tier, Usage][] {
+  return run.leadByTier ? (Object.entries(run.leadByTier) as [Tier, Usage][]) : [[run.leadTier, run.lead]]
+}
+
+/** The lead's API-price $ equivalent across all its tiers. */
+export function leadDollars(run: Run, cfg: Config): number {
+  return leadUsageByTier(run).reduce((sum, [tier, u]) => sum + dollars(u, tier, cfg), 0)
+}
+
 export function runUsage(run: Run, cfg: Config) {
-  let weighted = weightedTokens(run.lead, run.leadTier, cfg)
-  let usd = dollars(run.lead, run.leadTier, cfg)
+  let weighted = 0
+  let usd = 0
+  for (const [tier, u] of leadUsageByTier(run)) {
+    weighted += weightedTokens(u, tier, cfg)
+    usd += dollars(u, tier, cfg)
+  }
   let total = zeroUsage()
   total = addUsage(total, run.lead)
   for (const a of Object.values(run.agents)) {

@@ -76,7 +76,10 @@ export type Run = {
   order: string[]
   agents: Record<string, AgentRec>
   lead: Usage
+  /** The tier of the lead's latest turn (display only). */
   leadTier: Tier
+  /** The lead's usage per tier: its turns can run on different models. Absent in older runs. */
+  leadByTier?: Partial<Record<Tier, Usage>>
   approvals: Approval[]
   log: string[]
   summary?: string

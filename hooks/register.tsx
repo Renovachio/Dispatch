@@ -18,6 +18,8 @@ import {
   newRun,
   projectDir,
   recentRuns,
+  leadDollars,
+  leadUsageByTier,
   parsePorcelain,
   relativeToProject,
   runsDir,
@@ -165,7 +167,7 @@ function report(run: Run, c: Config) {
       tokens: a.usage.input_tokens + a.usage.output_tokens + a.usage.cache_read_input_tokens + a.usage.cache_creation_input_tokens,
       usd: dollars(a.usage, a.tier, c),
     })),
-    lead: { tier: run.leadTier, usd: dollars(run.lead, run.leadTier, c) },
+    lead: { tier: run.leadTier, tiers: leadUsageByTier(run).map(([t]) => t), usd: Math.round(leadDollars(run, c) * 100) / 100 },
   }
 }
 
@@ -628,7 +630,17 @@ export const register: Register = on => {
         if (!a) return r
         return { ...r, updatedAt: now, agents: { ...r.agents, [agentId]: { ...a, usage: addUsage(a.usage, usage), status: 'done', endedAt: now } } }
       }
-      return { ...r, updatedAt: now, lead: addUsage(r.lead, usage), leadTier: tierOf(usage.model), leadPending: false }
+      const tier = tierOf(usage.model)
+      const counted = r.lead.input_tokens + r.lead.output_tokens + r.lead.cache_read_input_tokens + r.lead.cache_creation_input_tokens > 0
+      const byTier = r.leadByTier ?? (counted ? { [r.leadTier]: r.lead } : {})
+      return {
+        ...r,
+        updatedAt: now,
+        lead: addUsage(r.lead, usage),
+        leadTier: tier,
+        leadByTier: { ...byTier, [tier]: addUsage(byTier[tier] ?? zeroUsage(), usage) },
+        leadPending: false,
+      }
     })
     return result
   })
@@ -672,7 +684,7 @@ export const register: Register = on => {
             </Text>
           )
         })}
-        <Text dimColor>lead {run.leadTier} ${dollars(run.lead, run.leadTier, c).toFixed(2)}</Text>
+        <Text dimColor>lead {leadUsageByTier(run).map(([t]) => t).join('+')} ${leadDollars(run, c).toFixed(2)}</Text>
         {run.approvals.some(a => a.queued) && <Text color="yellow">{run.approvals.filter(a => a.queued).length} action(s) waiting for approval: /dispatch:dispatch approvals</Text>}
       </Box>
     )

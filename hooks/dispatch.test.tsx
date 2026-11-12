@@ -129,7 +129,7 @@ test('policy: data rule, shell and file scope', async () => {
 
 // ---------- through the engine ----------
 
-function stubEngine(on: On, files: Map<string, string>, listed: string[] = [], git: string[] = [], clock = { now: Date.UTC(2026, 10, 12, 10, 0, 0) }, gitPrefix = '') {
+function stubEngine(on: On, files: Map<string, string>, listed: string[] = [], git: string[] = [], clock = { now: Date.UTC(2026, 10, 12, 10, 0, 0) }, gitPrefix = '', model = 'claude-sonnet-5-5') {
   on('process.run', (_, e) => {
     const stdout = e.argv.includes('--show-prefix') ? `${gitPrefix}\n` : git.join('\n')
     return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
@@ -143,7 +143,7 @@ function stubEngine(on: On, files: Map<string, string>, listed: string[] = [], g
   on('ui.notify', () => ({ value: { isSent: true, channel: 'client' } }))
   on('ui.status', () => ({ value: undefined }))
   on('session.cwd', () => ({ value: '/p' }))
-  on('session.model', () => ({ value: 'claude-sonnet-5-5' }))
+  on('session.model', () => ({ value: model }))
   const isDefaults = (p: string) => p.endsWith('/config/defaults.json')
   on('fs.exists', (_, e) => ({ value: files.has((e as { path: string }).path) || isDefaults((e as { path: string }).path) }))
   on('fs.read', (_, e) => {
@@ -340,6 +340,25 @@ test('engine: in a subfolder of a git repo, a task that wrote its own file passe
   git.push('?? cwd/brief.md', ' M shared/config.json')
   const done = parse(await $.tool.call({ tool: 'mcp__dispatch__run', action: 'task', task: 't1', status: 'done' }))
   expect(done.scope_violations).toEqual(['../shared/config.json'])
+})
+
+test('engine: a lead whose turns run on different models is costed per model', async ($, on) => {
+  const files = new Map<string, string>()
+  // The session starts on Opus; the lead's first turn runs on the skill's Sonnet pin.
+  stubEngine(on, files, [], [], { now: Date.UTC(2026, 10, 12, 10, 0, 0) }, '', 'claude-opus-5-5')
+  on('tool.call', () => ({ result: 'ok' }))
+  on('turn.complete', () => ({ text: 'done' }))
+  await $.session.start({ cwd: '/p', surface: 'terminal', isInteractive: true })
+  parse(await $.tool.call({ tool: 'mcp__dispatch__run', action: 'start', objective: 'x', title: 'Mixed lead', size: 'small' }))
+  const turn = (model: string) => $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: model, usage: { model, input_tokens: 0, output_tokens: 1_000_000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } as never)
+  // First turn on Sonnet (the skill's pin), later turns on the session default.
+  await turn('claude-sonnet-5-5')
+  await turn('claude-opus-5-5')
+  const status = parse(await $.tool.call({ tool: 'mcp__dispatch__run', action: 'status' }))
+  // 1M output at sonnet (weight 1, $10/M) + 1M at opus (weight 2, $20/M); not 2M at the last tier.
+  expect((status.budget as { used: number }).used).toBe(3_000_000)
+  expect(status.usd_equivalent).toBe(30)
+  expect((status.lead as { tiers: string[] }).tiers).toEqual(['sonnet', 'opus'])
 })
 
 // ---------- schedules ----------
