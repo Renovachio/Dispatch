@@ -81,6 +81,11 @@ Type-checking (`tsc -p .`) needs Node.js.
 | feature-small (3), inline builder | 0.67 | 0.67 | $0.12 vs $0.13 (0.92×) |
 | status-update (3), inline writer, no Slack connector in the sandbox | 1.00 | 1.00 | $0.10 vs $0.11 (0.91×) |
 | prd-from-context (2) | 0.50 | 0.00 | $0.12 vs $0.20 (0.60×) |
-| research-report (2) | not graded (usage limit hit mid-run) | | |
+| research-report (3), both arms `--model sonnet` | 0.50 | 0.50 | $0.25 vs $0.16 (1.5×) |
 
 History: the first version cost 2.6× plain Claude on feature-small. Inline small tasks and the slimmer skill brought it under 1×. Judge votes on single runs are noisy, so read scores across runs.
+
+Caveats:
+- research-report (2026-11-12): every run in both arms wrote the brief, so the file check passes, but the quality judge (Haiku) failed all six briefs. Atlassian's pricing page doesn't render, so Jira prices come from third parties, and no brief labels facts and inferences separately. The judge can't tell the arms apart yet, so 0.50 says nothing about quality. Dispatch used 45k–62k weighted tokens per run (small budget: 150k).
+- The rows above it ran without `--model`. The plain arm then uses the session default (Opus, if that's your default). Dispatch's lead runs on Sonnet only for its first turn, so those cost ratios partly compare models. Rerun them with `--model` to compare like for like.
+- The feature-small and prd-from-context judges see only the final chat message, not the files written, so they can't check file contents. research-report's judge now reads the file (`focus: {source: file, path: …}`).
