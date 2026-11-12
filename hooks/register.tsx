@@ -148,8 +148,9 @@ function report(run: Run, c: Config) {
     budget: { used: u.weighted, limit: run.budget, pct: Math.round((100 * u.weighted) / Math.max(1, run.budget)) },
     usd_equivalent: u.usd,
     tokens: u.total,
-    tasks: run.order.map(id => {
+    tasks: run.order.flatMap(id => {
       const t = run.tasks[id]
+      if (!t) return []
       return { id, role: t.role, tier: t.tier, status: t.status, attempts: t.attempts, deliverables: t.deliverables }
     }),
     agents: Object.values(run.agents).map(a => ({
@@ -344,14 +345,15 @@ async function handle($: EngineInterface, e: Record<string, unknown>): Promise<u
     const errors = [...bad, ...checkPlan([...Object.values(run.tasks).filter(t => !tasks.some(n => n.id === t.id)), ...tasks], run.size)]
     if (errors.length) return { errors }
     const next = await mutate($, r => setPlan(r, tasks, c, now))
-    return { tasks: next!.order.map(id => ({ id, role: next!.tasks[id].role, tier: next!.tasks[id].tier })) }
+    return { tasks: next!.order.map(id => ({ id, role: next!.tasks[id]?.role, tier: next!.tasks[id]?.tier })) }
   }
 
   if (action === 'task') {
     const id = String(e.task ?? '')
     const status = String(e.status ?? '') as TaskStatus
-    if (!run.tasks[id]) return { error: `unknown task ${id}` }
-    if (status === 'running' && run.tasks[id].inline) {
+    const current = run.tasks[id]
+    if (!current) return { error: `unknown task ${id}` }
+    if (status === 'running' && current.inline) {
       const other = Object.values(run.tasks).find(t => t.inline && t.status === 'running' && t.id !== id)
       if (other) return { error: `inline task ${other.id} is still running; finish it first` }
     }
@@ -359,7 +361,7 @@ async function handle($: EngineInterface, e: Record<string, unknown>): Promise<u
     let violations: string[] = []
     let effective = status
     let reason = typeof e.summary === 'string' ? e.summary : undefined
-    if (status === 'done' && run.baseline && run.tasks[id].paths.length > 0) {
+    if (status === 'done' && run.baseline && current.paths.length > 0) {
       const changed = await gitChanged($, run.project)
       violations = changed ? scopeViolations(changed, run, c.storage.project) : []
       if (violations.length) {
@@ -370,6 +372,7 @@ async function handle($: EngineInterface, e: Record<string, unknown>): Promise<u
     let retry: { allowed: boolean; tier?: string } | undefined
     const next = await mutate($, r => {
       const t = r.tasks[id]
+      if (!t) return r
       const failed = effective === 'failed'
       const attempts = failed ? t.attempts + 1 : t.attempts
       const canRetry = failed && attempts <= c.retries.max
@@ -396,7 +399,7 @@ async function handle($: EngineInterface, e: Record<string, unknown>): Promise<u
     })
     return {
       task: id,
-      status: next!.tasks[id].status,
+      status: next!.tasks[id]?.status,
       retry,
       scope_violations: violations.length ? violations : undefined,
       reason: violations.length ? reason : undefined,
@@ -645,6 +648,7 @@ export const register: Register = on => {
         {run.order.length > 0 && <Text bold>Tasks</Text>}
         {run.order.slice(0, room).map(id => {
           const t = run.tasks[id]
+          if (!t) return null
           const mark = t.status === 'done' ? '✓' : t.status === 'running' ? '●' : t.status === 'failed' ? '✗' : t.status === 'skipped' ? '–' : '○'
           return (
             <Text dimColor={t.status === 'done' || t.status === 'skipped'}>

@@ -88,7 +88,7 @@ export function defaultTier(role: Role, size: Size, cfg: Config): Tier {
 export function escalate(tier: Tier, cfg: Config): Tier {
   const ladder = cfg.escalation
   const i = ladder.indexOf(tier)
-  return i >= 0 && i < ladder.length - 1 ? ladder[i + 1] : tier
+  return i >= 0 ? (ladder[i + 1] ?? tier) : tier
 }
 
 const INLINE_ROLES = new Set(['builder', 'writer'])
@@ -121,8 +121,8 @@ export function checkPlan(tasks: readonly TaskInput[], size: Size = 'small'): st
   }
   for (let i = 0; i < writers.length; i++) {
     for (let j = i + 1; j < writers.length; j++) {
-      const a = writers[i]
-      const b = writers[j]
+      const a = writers[i]!
+      const b = writers[j]!
       const overlap = (a.paths ?? []).some(p => (b.paths ?? []).some(q => pathsOverlap(p, q)))
       if (overlap && !reaches(a.id, b.id) && !reaches(b.id, a.id)) {
         errors.push(`${a.id} and ${b.id} write overlapping paths in parallel: add a dependency or give one a worktree`)

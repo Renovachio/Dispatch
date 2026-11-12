@@ -38,7 +38,7 @@ function runsOn(s: Schedule, d: Date): boolean {
 
 /** The slot (epoch ms) on the local day containing `localMs`, at the schedule's time. */
 function slotOn(s: Schedule, localMs: number, offsetMin: number): number {
-  const [h, m] = s.at.split(':').map(Number)
+  const [h = 0, m = 0] = s.at.split(':').map(Number)
   const day = Math.floor(localMs / DAY) * DAY
   return day + (h * 60 + m) * 60_000 - offsetMin * 60_000
 }
@@ -76,7 +76,7 @@ export function isDue(s: Schedule, now: number, offsetMin: number): boolean {
 
 /** A crontab line that starts the headless runner at the schedule's time. */
 export function cronLine(s: Schedule, runner: string, project: string, pluginDir?: string): string {
-  const [h, m] = s.at.split(':').map(Number)
+  const [h = 0, m = 0] = s.at.split(':').map(Number)
   const dow = s.every === 'weekdays' ? '1-5' : s.every === 'weekly' ? String(s.day) : '*'
   const dom = s.every === 'monthly' ? String(s.day) : '*'
   const q = (p: string) => `'${p.replace(/'/g, `'\\''`)}'`

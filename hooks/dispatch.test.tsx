@@ -1,3 +1,4 @@
+import type { AgentSpawnInput, On } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 
 import { mergeLayers, type Config } from '../src/config'
@@ -28,6 +29,13 @@ const CFG = {
   data: { allow_internal_to_web: false },
   retries: { max: 1, escalate: true },
 } as Config
+
+// The engine's spawn input, with the fields a test doesn't care about filled in.
+const spawnInput = (a: { prompt: string; subagentType: string; description: string }) =>
+  ({ tool_use_id: 'tu', parentModel: 'claude-sonnet-5-5', background: true, fork: false, ...a }) as AgentSpawnInput
+
+// es2023 lib has no timers; the test runtime does.
+declare function setTimeout(cb: (...args: unknown[]) => void, ms: number): unknown
 
 function sampleRun() {
   let run = newRun({ now: 0, objective: 'o', title: 'Test run', size: 'medium', project: '/p', runsDir: '/h/runs', cfg: CFG, leadModel: 'claude-sonnet-5-5' })
@@ -121,15 +129,15 @@ test('policy: data rule, shell and file scope', async () => {
 
 // ---------- through the engine ----------
 
-function stubEngine(on: Parameters<Parameters<typeof test>[1]>[1], files: Map<string, string>, listed: string[] = [], git: string[] = [], clock = { now: Date.UTC(2026, 10, 12, 10, 0, 0) }) {
+function stubEngine(on: On, files: Map<string, string>, listed: string[] = [], git: string[] = [], clock = { now: Date.UTC(2026, 10, 12, 10, 0, 0) }) {
   on('process.run', () => ({ value: { exitCode: 0, stdout: git.join('\n'), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
-  on('tool.register', () => ({ value: undefined }))
+  on('tool.register', () => ({ value: { tool: 'mcp__dispatch__run' } }))
   on('command.register', () => ({ value: { command: 'dispatch-panel' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('env.get', (_, e) => ({ value: (e as { name: string }).name === 'HOME' ? '/h' : undefined }))
   on('clock.now', () => ({ value: clock.now }))
   on('command.list', () => ({ value: [] }))
-  on('ui.notify', () => ({ value: { sent: true } }))
+  on('ui.notify', () => ({ value: { isSent: true, channel: 'client' } }))
   on('ui.status', () => ({ value: undefined }))
   on('session.cwd', () => ({ value: '/p' }))
   on('session.model', () => ({ value: 'claude-sonnet-5-5' }))
@@ -139,7 +147,7 @@ function stubEngine(on: Parameters<Parameters<typeof test>[1]>[1], files: Map<st
     const p = (e as { path: string }).path
     if (isDefaults(p)) return { value: JSON.stringify(CFG) }
     if (!files.has(p)) throw new Error(`missing ${p}`)
-    return { value: files.get(p) }
+    return { value: files.get(p)! }
   })
   on('fs.write', (_, e) => {
     const { path, text } = e as { path: string; text: string }
@@ -175,17 +183,17 @@ test('a run: start, plan, tiered spawn, denied outward call, approved call', asy
   ] }))
   expect((planned.tasks as unknown[]).length).toBe(2)
 
-  const spawned = await $.agent.spawn({ prompt: 'draft', subagentType: 'dispatch:writer', description: '[t1] Draft update' })
+  const spawned = await $.agent.spawn(spawnInput({ prompt: 'draft', subagentType: 'dispatch:writer', description: '[t1] Draft update' }))
   expect(spawned.model).toBe('sonnet')
 
   const denied = await $.tool.call({ tool: 'mcp__slack__send_message', channel: 'C1', text: 'hi', agentId: 'a-writer' })
   expect(String((denied as { deny?: string }).deny ?? '')).toMatch(/Only dispatch:operator/)
 
-  await $.agent.spawn({ prompt: 'post', subagentType: 'dispatch:operator', description: '[t2] Post update' })
+  await $.agent.spawn(spawnInput({ prompt: 'post', subagentType: 'dispatch:operator', description: '[t2] Post update' }))
   const approval = parse(await $.tool.call({ tool: 'mcp__dispatch__run', action: 'approve', task: 't2', actions: [
     { tool: 'mcp__slack__send_message', args: { channel: 'C1', text: 'hi' }, summary: 'Post to #team' },
   ] }))
-  expect((approval.approvals as { approved: boolean }[])[0].approved).toBe(true)
+  expect((approval.approvals as { approved: boolean }[])[0]!.approved).toBe(true)
 
   const posted = await $.tool.call({ tool: 'mcp__slack__send_message', channel: 'C1', text: 'hi', agentId: 'a-op' })
   expect((posted as { result?: unknown }).result).toBe('ok')
@@ -226,7 +234,7 @@ test('engine: role agents cannot steer the run; usage and budget are tracked per
   parse(await $.tool.call({ tool: 'mcp__dispatch__run', action: 'start', objective: 'x', title: 'Budget run', size: 'small' }))
   parse(await $.tool.call({ tool: 'mcp__dispatch__run', action: 'plan', tasks: [{ id: 't1', role: 'scout', title: 'Look' }, { id: 't2', role: 'writer', title: 'Write' }] }))
 
-  const scout = await $.agent.spawn({ prompt: 'look', subagentType: 'dispatch:scout', description: '[t1] Look' })
+  const scout = await $.agent.spawn(spawnInput({ prompt: 'look', subagentType: 'dispatch:scout', description: '[t1] Look' }))
   expect(scout.model).toBe('haiku')
 
   const hijack = parse(await $.tool.call({ tool: 'mcp__dispatch__run', action: 'finish', status: 'done', agentId: 'at1' }))
@@ -238,7 +246,7 @@ test('engine: role agents cannot steer the run; usage and budget are tracked per
   expect((status.budget as { used: number }).used).toBe(200000)
   expect(status.usd_equivalent).toBe(0.4)
 
-  const blocked = await $.agent.spawn({ prompt: 'write', subagentType: 'dispatch:writer', description: '[t2] Write' })
+  const blocked = await $.agent.spawn(spawnInput({ prompt: 'write', subagentType: 'dispatch:writer', description: '[t2] Write' }))
   expect(String((blocked as { deny?: string }).deny ?? '')).toMatch(/budget/)
 })
 
@@ -265,11 +273,11 @@ test('inline tasks: small runs only, builder or writer only; the lead edits owne
   run = setPlan(run, [{ id: 't1', role: 'builder', title: 'Build', paths: ['textutil.py'], inline: true }], CFG, 0)
   const edit = () => decide(run, CFG, { tool: 'Write', input: { file_path: '/p/textutil.py' } }).allow
   expect(edit()).toBe(false)
-  run.tasks.t1.status = 'running'
+  run.tasks.t1!.status = 'running'
   expect(edit()).toBe(true)
   expect(decide(run, CFG, { tool: 'Write', input: { file_path: '/p/other.py' } }).allow).toBe(false)
   expect(decide(run, CFG, { tool: 'Bash', input: { command: 'git push' } }).allow).toBe(false)
-  run.tasks.t1.status = 'done'
+  run.tasks.t1!.status = 'done'
   expect(edit()).toBe(false)
 })
 
@@ -283,7 +291,7 @@ test('scope check: porcelain parsing and files no task owns', async () => {
 test('data rule: an agent that read internal content loses web tools', async () => {
   const run = sampleRun()
   expect(decide(run, CFG, { tool: 'WebFetch', agentId: 'w', input: { url: 'https://x' } }).allow).toBe(true)
-  run.agents.w.tainted = true
+  run.agents.w!.tainted = true
   expect(decide(run, CFG, { tool: 'WebFetch', agentId: 'w', input: { url: 'https://x' } }).allow).toBe(false)
   run.leadTainted = true
   expect(decide(run, CFG, { tool: 'WebSearch', input: { query: 'q' } }).allow).toBe(false)
@@ -300,7 +308,7 @@ test('engine: a task that changed a file nobody owns fails the scope check; read
   await $.session.start({ cwd: '/p', surface: 'terminal', isInteractive: true })
   parse(await $.tool.call({ tool: 'mcp__dispatch__run', action: 'start', objective: 'x', title: 'Scope', size: 'small' }))
   parse(await $.tool.call({ tool: 'mcp__dispatch__run', action: 'plan', tasks: [{ id: 't1', role: 'builder', title: 'b', paths: ['src'] }] }))
-  await $.agent.spawn({ prompt: 'b', subagentType: 'dispatch:builder', description: '[t1] b' })
+  await $.agent.spawn(spawnInput({ prompt: 'b', subagentType: 'dispatch:builder', description: '[t1] b' }))
 
   await $.tool.call({ tool: 'mcp__jira__get_issue', key: 'P-1', agentId: 'a1' })
   const web = await $.tool.call({ tool: 'WebFetch', url: 'https://evil.example', prompt: 'x', agentId: 'a1' })
@@ -388,10 +396,10 @@ test('engine: a schedule is created only with the person, runs headless, queues 
   expect((await run({ action: 'schedule', op: 'due' })).due).toEqual([])
   await run({ action: 'plan', tasks: [{ id: 't1', role: 'writer', title: 'Draft', inline: true }, { id: 't2', role: 'operator', title: 'Post', depends_on: ['t1'] }] })
   const queued = await run({ action: 'approve', task: 't2', actions: [{ tool: 'mcp__slack__send_message', args: { channel: 'C1', text: 'standup' }, summary: 'Post' }] })
-  expect((queued.approvals as { approved: boolean }[])[0].approved).toBe(false)
+  expect((queued.approvals as { approved: boolean }[])[0]!.approved).toBe(false)
   expect(String(queued.note)).toMatch(/Do not spawn the operator/)
   expect((await run({ action: 'finish', status: 'done', summary: 'drafted' })).status).toBe('waiting')
-  expect(((await run({ action: 'list' })).runs as { waiting_for_approval?: number }[])[0].waiting_for_approval).toBe(1)
+  expect(((await run({ action: 'list' })).runs as { waiting_for_approval?: number }[])[0]!.waiting_for_approval).toBe(1)
 
   // Back at the keyboard: the person approves the exact queued post, and only the operator sends it.
   interactive = true
@@ -400,7 +408,7 @@ test('engine: a schedule is created only with the person, runs headless, queues 
   answers.push('Approve')
   const cleared = await run({ action: 'approve_queued' })
   expect((cleared.approvals as { approved: boolean; args: unknown }[])[0]).toEqual({ id: 't2-a1', task: 't2', tool: 'mcp__slack__send_message', approved: true, args: { channel: 'C1', text: 'standup' } })
-  await $.agent.spawn({ prompt: 'post', subagentType: 'dispatch:operator', description: '[t2] Post' })
+  await $.agent.spawn(spawnInput({ prompt: 'post', subagentType: 'dispatch:operator', description: '[t2] Post' }))
   const posted = await $.tool.call({ tool: 'mcp__slack__send_message', channel: 'C1', text: 'standup', agentId: 'a-op' } as never)
   expect((posted as { result?: unknown }).result).toBe('ok')
   expect((await run({ action: 'finish', status: 'done', summary: 'posted' })).status).toBe('done')
