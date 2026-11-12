@@ -74,18 +74,20 @@ claude plugin eval . --allow-tools Edit Write "Bash(python3:*)" "Bash(python:*)"
 
 Type-checking (`tsc -p .`) needs Node.js.
 
-### Eval results (2026-11-12, Sonnet lead)
+### Eval results (2026-11-12, both arms `--model sonnet`)
 
-| Case (runs per arm) | Dispatch | Plain Claude | Cost per run, Dispatch vs plain |
+| Case (3 runs per arm) | Dispatch | Plain Claude | Cost per run, Dispatch vs plain |
 |---|---|---|---|
-| feature-small (3), inline builder | 0.67 | 0.67 | $0.12 vs $0.13 (0.92×) |
-| status-update (3), inline writer, no Slack connector in the sandbox | 1.00 | 1.00 | $0.10 vs $0.11 (0.91×) |
-| prd-from-context (2) | 0.50 | 0.00 | $0.12 vs $0.20 (0.60×) |
-| research-report (3), both arms `--model sonnet` | 0.50 | 0.50 | $0.25 vs $0.16 (1.5×) |
+| feature-small | 1.00 | 1.00 | $0.14 vs $0.06 (2.3×) |
+| prd-from-context | 1.00 | 1.00 | $0.14 vs $0.09 (1.6×) |
+| research-report | 0.50 | 0.50 | $0.25 vs $0.16 (1.5×) |
+| status-update | 1.00 | 1.00 | $0.10 vs $0.11 (0.91×), older run without `--model`, so not like for like |
 
-History: the first version cost 2.6× plain Claude on feature-small. Inline small tasks and the slimmer skill brought it under 1×. Judge votes on single runs are noisy, so read scores across runs.
+On Sonnet both arms hit the same quality on these cases, and Dispatch costs 1.5–2.3× more. Its value here is the safety rules (approvals, scope check, data rule) and the run record, not cheaper or better output on small tasks.
 
-Caveats:
-- research-report (2026-11-12): every run in both arms wrote the brief, so the file check passes, but the quality judge (Haiku) failed all six briefs. Atlassian's pricing page doesn't render, so Jira prices come from third parties, and no brief labels facts and inferences separately. The judge can't tell the arms apart yet, so 0.50 says nothing about quality. Dispatch used 45k–62k weighted tokens per run (small budget: 150k).
-- The rows above it ran without `--model`. The plain arm then uses the session default (Opus, if that's your default). Dispatch's lead runs on Sonnet only for its first turn, so those cost ratios partly compare models. Rerun them with `--model` to compare like for like.
-- The feature-small and prd-from-context judges see only the final chat message, not the files written, so they can't check file contents. research-report's judge now reads the file (`focus: {source: file, path: …}`).
+How to read this:
+- Graders read the files the agent wrote (`focus: {source: file, path: …}`), check that files exist, and use the transcript for process rules (tests run, nothing committed). Earlier judges saw only the final chat message: the previous 0.67 and 0.50 scores came from that, not from the work.
+- Earlier runs without `--model` reported Dispatch under 1× plain Claude. The plain arm ran on the session default (Opus) and Dispatch's lead partly on Sonnet, so that compared models, not approaches.
+- research-report: every run in both arms wrote the brief, but the quality judge (Haiku) failed all six. Atlassian's pricing page doesn't render, so Jira prices come from third parties, and no brief labels facts and inferences separately. Until the rubric or judge changes, 0.50 says nothing about quality.
+- Dispatch's lead runs on Sonnet only for its first turn. Turns started by a background agent finishing run on the session default model.
+- Weighted tokens per Dispatch run on research-report: 45k–62k (small budget 150k). All cases size as small, so medium and large budgets are still untested.
