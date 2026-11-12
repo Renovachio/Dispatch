@@ -81,12 +81,12 @@ Type-checking (`tsc -p .`) needs Node.js.
 | feature-small | 1.00 | 1.00 | $0.14 vs $0.06 (2.3×) |
 | prd-from-context | 1.00 | 1.00 | $0.14 vs $0.09 (1.6×) |
 | research-report | 0.50 | 0.50 | $0.25 vs $0.16 (1.5×) |
-| status-update | 1.00 | 1.00 | $0.10 vs $0.11 (0.91×), older run without `--model`, so not like for like |
+| status-update | 1.00 | 1.00 | $0.10 vs $0.04 (2.6×) |
 
-On Sonnet both arms hit the same quality on these cases, and Dispatch costs 1.5–2.3× more. Its value here is the safety rules (approvals, scope check, data rule) and the run record, not cheaper or better output on small tasks.
+On Sonnet both arms hit the same quality on these cases, and Dispatch costs 1.5–2.6× more. Its value here is the safety rules (approvals, scope check, data rule) and the run record, not cheaper or better output on small tasks.
 
 How to read this:
-- Graders read the files the agent wrote (`focus: {source: file, path: …}`), check that files exist, and use the transcript for process rules (tests run, nothing committed). Earlier judges saw only the final chat message: the previous 0.67 and 0.50 scores came from that, not from the work.
+- Graders read the files the agent wrote (`focus: {source: file, path: …}`), check that files exist, and use the transcript for process rules (tests run, nothing committed, nothing posted without approval) and for content that isn't saved to a file (the status update). Earlier judges saw only the final chat message: the previous 0.67 and 0.50 scores came from that, not from the work.
 - Earlier runs without `--model` reported Dispatch under 1× plain Claude. The plain arm ran on the session default (Opus) and Dispatch's lead partly on Sonnet, so that compared models, not approaches.
 - research-report: every run in both arms wrote the brief, but the quality judge (Haiku) failed all six. Atlassian's pricing page doesn't render, so Jira prices come from third parties, and no brief labels facts and inferences separately. Until the rubric or judge changes, 0.50 says nothing about quality.
 - Dispatch's lead runs on Sonnet only for its first turn. Turns started by a background agent finishing run on the session default model.
