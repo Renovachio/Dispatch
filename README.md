@@ -11,7 +11,7 @@ Adaptive multi-agent orchestration for Claude Code. Give it any request (code, P
 | Size | What runs | Typical use |
 |---|---|---|
 | trivial | the lead answers directly, no agents | a lookup, a quick rewrite |
-| small | 1 role agent | a scoped code change, one document, a status update |
+| small | the lead itself (inline), or 1 role agent when isolation pays | a scoped code change, one document, a status update |
 | medium | 2–4 agents planned by the lead | research → write → publish |
 | large | an Opus planner, parallel waves, an independent reviewer | multi-part, cross-domain or high-stakes work |
 
@@ -58,3 +58,12 @@ claude plugin eval . --allow-tools Edit Write "Bash(python3:*)" "Bash(python:*)"
 ```
 
 Type-checking (`tsc -p .`) needs Node.js.
+
+### Eval results (2026-11-12, 3 runs per arm, Sonnet lead)
+
+| Case | Dispatch | Plain Claude | Cost per run, Dispatch vs plain |
+|---|---|---|---|
+| feature-small (inline builder) | 1.00 | 1.00 | $0.10 vs $0.12 (0.83×) |
+| status-update (inline writer, no Slack connector in the sandbox) | 0.67 | 0.67 | $0.14 vs $0.10 (1.48×) |
+
+Before inline small tasks, feature-small cost 2.6× plain Claude ($0.34 vs $0.13). The prd-from-context and research-report cases have not been run yet.

@@ -77,6 +77,7 @@ export type TaskInput = {
   skills?: string[]
   paths?: string[]
   depends_on?: string[]
+  inline?: boolean
 }
 
 export function defaultTier(role: Role, size: Size, cfg: Config): Tier {
@@ -90,9 +91,16 @@ export function escalate(tier: Tier, cfg: Config): Tier {
   return i >= 0 && i < ladder.length - 1 ? ladder[i + 1] : tier
 }
 
-/** Errors for a plan: unknown deps, cycles-by-order, and two write tasks sharing a path. */
-export function checkPlan(tasks: readonly TaskInput[]): string[] {
+const INLINE_ROLES = new Set(['builder', 'writer'])
+
+/** Errors for a plan: unknown deps, unowned builders, inline misuse, and parallel writers sharing a path. */
+export function checkPlan(tasks: readonly TaskInput[], size: Size = 'small'): string[] {
   const errors: string[] = []
+  for (const t of tasks) {
+    if (!t.inline) continue
+    if (size !== 'small') errors.push(`${t.id}: inline tasks are for small runs only; spawn an agent`)
+    if (!INLINE_ROLES.has(t.role)) errors.push(`${t.id}: only builder or writer tasks can run inline (${t.role} needs its own agent)`)
+  }
   const ids = new Set<string>()
   for (const t of tasks) {
     if (ids.has(t.id)) errors.push(`duplicate task id ${t.id}`)
@@ -168,6 +176,7 @@ export function setPlan(run: Run, tasks: readonly TaskInput[], cfg: Config, now:
       tier: prev?.tier ?? defaultTier(t.role, run.size, cfg),
       deliverables: prev?.deliverables ?? [],
       summary: prev?.summary,
+      inline: t.inline === true,
     }
     if (!order.includes(t.id)) order.push(t.id)
   }

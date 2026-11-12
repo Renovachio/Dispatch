@@ -70,7 +70,9 @@ export function decide(run: Run, cfg: Config, call: Call): Decision {
   const { tool, agentId, input } = call
   if (isOwnTool(tool)) return { allow: true }
   const role = roleOf(run, agentId)
-  const task = agentId ? run.agents[agentId]?.task : undefined
+  // The lead works with the owned paths of the inline task it is running, if any.
+  const inlineTask = agentId ? undefined : Object.values(run.tasks).find(t => t.inline && t.status === 'running')
+  const task = agentId ? run.agents[agentId]?.task : inlineTask?.id
   const owned = task ? run.tasks[task]?.paths ?? [] : []
 
   // File writes: inside the run folder or the task's owned paths; never Dispatch's own state or policy.

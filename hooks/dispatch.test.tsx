@@ -250,3 +250,20 @@ test('engine: resume reattaches the latest run from disk', async ($, on) => {
   expect(resumed.run).toBe(id)
   expect(resumed.objective).toBe('x')
 })
+
+test('inline tasks: small runs only, builder or writer only; the lead edits owned paths only while running', async () => {
+  expect(checkPlan([{ id: 'a', role: 'builder', title: 'x', paths: ['src'], inline: true }], 'medium').length).toBe(1)
+  expect(checkPlan([{ id: 'a', role: 'operator', title: 'x', inline: true }], 'small').length).toBe(1)
+  expect(checkPlan([{ id: 'a', role: 'builder', title: 'x', paths: ['src'], inline: true }], 'small').length).toBe(0)
+
+  let run = newRun({ now: 0, objective: 'o', title: 'Inline', size: 'small', project: '/p', runsDir: '/p/.dispatch2/runs', cfg: CFG, leadModel: 'sonnet' })
+  run = setPlan(run, [{ id: 't1', role: 'builder', title: 'Build', paths: ['textutil.py'], inline: true }], CFG, 0)
+  const edit = () => decide(run, CFG, { tool: 'Write', input: { file_path: '/p/textutil.py' } }).allow
+  expect(edit()).toBe(false)
+  run.tasks.t1.status = 'running'
+  expect(edit()).toBe(true)
+  expect(decide(run, CFG, { tool: 'Write', input: { file_path: '/p/other.py' } }).allow).toBe(false)
+  expect(decide(run, CFG, { tool: 'Bash', input: { command: 'git push' } }).allow).toBe(false)
+  run.tasks.t1.status = 'done'
+  expect(edit()).toBe(false)
+})

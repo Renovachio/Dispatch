@@ -5,7 +5,7 @@ Pick the smallest size that will get the work right the first time. Orchestratio
 | Size | Signals | Shape |
 |---|---|---|
 | trivial | answerable from context or one lookup; ≤ 1 short output; no files changed | answer directly, no run |
-| small | one deliverable, one domain, one source cluster; at most a few files changed; at most one outward action | 1 role agent |
+| small | one deliverable, one domain, one source cluster; at most a few files changed; at most one outward action | the lead does it **inline**, or 1 role agent when it needs broad reading, research or a Haiku lookup |
 | medium | 2–4 separable parts (gather → write, or research → write → post); or two domains (data + doc) | 2–4 tasks, lead plans |
 | large | > 4 parts, cross-domain, parallelizable research, multi-module code change, or high stakes | planner (Opus), waves, reviewer |
 
@@ -14,7 +14,7 @@ Pick the smallest size that will get the work right the first time. Orchestratio
 ## Examples
 - "What's the status of PROJ-123?" → trivial (one read).
 - "Write a PRD for feature X from this Jira epic, the Slack thread and the Drive docs, then publish it to Confluence" → medium, risky: t1 writer gathers and drafts (skills: a PRD skill), t2 reviewer, t3 operator publishes after approval.
-- "Add a slugify function with tests to textutil" → small: builder owns `src/textutil*` and its tests.
+- "Add a slugify function with tests to textutil" → small, **inline** builder task owning `textutil.py` and its test file.
 - "Competitive research report on X vs Y vs Z, with sources" → medium: t1–t3 researchers in parallel (one per competitor), t4 writer synthesizes.
-- "Weekly status from Jira/Linear posted to Slack" → small or medium: writer drafts from the trackers, operator posts after approval.
+- "Weekly status from Jira/Linear posted to Slack" → small: an **inline** writer task drafts it from the trackers, then a `dispatch:operator` task posts it after approval.
 - "Rebuild the onboarding flow across web and API with tests" → large.

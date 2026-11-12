@@ -66,7 +66,7 @@ const isActive = (run: Run | null): run is Run => !!run && (run.status === 'acti
 
 const TOOL_DESCRIPTION = `Dispatch run state. Only use while running the /dispatch skill. Call with {"action": ...}:
 - start {objective, title, size: small|medium|large, allow_internal_to_web?} → run id, folder, budget
-- plan {tasks: [{id, role, title, skills?, paths?, depends_on?}]} → tiers per task, or plan errors
+- plan {tasks: [{id, role, title, skills?, paths?, depends_on?, inline?}]} → tiers per task, or plan errors (inline: small runs, builder/writer, the lead does it)
 - task {task, status: running|done|failed|skipped, summary?, deliverables?} → on failed: whether one retry is allowed and at which tier
 - approve {task, actions: [{tool, args, summary, target?}]} → asks the person for each exact action; returns ids approved/declined. Use tool "browser" with args {} for a browser session.
 - status → usage, cost, tasks, agents
@@ -192,7 +192,7 @@ async function handle($: EngineInterface, e: Record<string, unknown>): Promise<u
   if (action === 'plan') {
     const tasks = (Array.isArray(e.tasks) ? e.tasks : []) as TaskInput[]
     const bad = tasks.filter(t => !ROLES.includes(t.role)).map(t => `${t.id}: unknown role ${t.role}`)
-    const errors = [...bad, ...checkPlan([...Object.values(run.tasks).filter(t => !tasks.some(n => n.id === t.id)), ...tasks])]
+    const errors = [...bad, ...checkPlan([...Object.values(run.tasks).filter(t => !tasks.some(n => n.id === t.id)), ...tasks], run.size)]
     if (errors.length) return { errors }
     const next = await mutate($, r => setPlan(r, tasks, c, now))
     return { tasks: next!.order.map(id => ({ id, role: next!.tasks[id].role, tier: next!.tasks[id].tier })) }
@@ -202,6 +202,10 @@ async function handle($: EngineInterface, e: Record<string, unknown>): Promise<u
     const id = String(e.task ?? '')
     const status = String(e.status ?? '') as TaskStatus
     if (!run.tasks[id]) return { error: `unknown task ${id}` }
+    if (status === 'running' && run.tasks[id].inline) {
+      const other = Object.values(run.tasks).find(t => t.inline && t.status === 'running' && t.id !== id)
+      if (other) return { error: `inline task ${other.id} is still running; finish it first` }
+    }
     let retry: { allowed: boolean; tier?: string } | undefined
     const next = await mutate($, r => {
       const t = r.tasks[id]

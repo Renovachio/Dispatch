@@ -25,6 +25,8 @@ export type Task = {
   tier?: Tier
   summary?: string
   deliverables: string[]
+  /** Small runs only: the lead does this task itself instead of spawning an agent. */
+  inline?: boolean
 }
 
 export type AgentRec = {
