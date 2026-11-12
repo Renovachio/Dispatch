@@ -19,6 +19,7 @@ import {
   projectDir,
   recentRuns,
   parsePorcelain,
+  relativeToProject,
   runsDir,
   runUsage,
   saveRun,
@@ -61,8 +62,11 @@ async function mutate($: EngineInterface, fn: (run: Run, now: number) => Run): P
 /** Changed files in the project's git work tree, or undefined outside git. */
 async function gitChanged($: EngineInterface, project: string): Promise<string[] | undefined> {
   try {
+    // Porcelain paths are relative to the repository root; the project can be a subfolder of it.
+    const prefix = await $.process.run(['git', 'rev-parse', '--show-prefix'], { cwd: project, timeoutMs: 15000 })
+    if (prefix.exitCode !== 0) return undefined
     const r = await $.process.run(['git', 'status', '--porcelain=v1', '-uall'], { cwd: project, timeoutMs: 15000 })
-    return r.exitCode === 0 ? parsePorcelain(r.stdout) : undefined
+    return r.exitCode === 0 ? relativeToProject(parsePorcelain(r.stdout), prefix.stdout.trim()) : undefined
   } catch {
     return undefined
   }

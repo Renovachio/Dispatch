@@ -171,6 +171,17 @@ export function parsePorcelain(out: string): string[] {
 }
 
 /**
+ * Repository-root paths made relative to the project folder (`prefix` from `git rev-parse --show-prefix`).
+ * A file outside the project keeps a `../` path, so no task can own it.
+ */
+export function relativeToProject(paths: readonly string[], prefix: string): string[] {
+  const p = prefix.replace(/\/*$/, '')
+  if (!p) return [...paths]
+  const up = '../'.repeat(p.split('/').length)
+  return paths.map(f => (f.startsWith(`${p}/`) ? f.slice(p.length + 1) : `${up}${f}`))
+}
+
+/**
  * Files changed since the run started that no task owns (Dispatch's own folder excepted).
  * A file already changed before the run is in the baseline and is not checked.
  */

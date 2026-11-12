@@ -5,7 +5,7 @@ import { mergeLayers, type Config } from '../src/config'
 import { dollars, tierOf, weightedTokens } from '../src/cost'
 import { decide, guardState } from '../src/policy'
 import { checkSchedule, cronLine, isDue, nextSlot, previousSlot, type Schedule } from '../src/schedule'
-import { canonical, checkPlan, escalate, newRun, ownsPath, parsePorcelain, scopeViolations, setPlan, taskFromDescription } from '../src/state'
+import { canonical, checkPlan, escalate, newRun, ownsPath, parsePorcelain, relativeToProject, scopeViolations, setPlan, taskFromDescription } from '../src/state'
 
 // A config close to config/defaults.json, inline so the pure tests need no IO.
 const CFG = {
@@ -129,8 +129,11 @@ test('policy: data rule, shell and file scope', async () => {
 
 // ---------- through the engine ----------
 
-function stubEngine(on: On, files: Map<string, string>, listed: string[] = [], git: string[] = [], clock = { now: Date.UTC(2026, 10, 12, 10, 0, 0) }) {
-  on('process.run', () => ({ value: { exitCode: 0, stdout: git.join('\n'), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+function stubEngine(on: On, files: Map<string, string>, listed: string[] = [], git: string[] = [], clock = { now: Date.UTC(2026, 10, 12, 10, 0, 0) }, gitPrefix = '') {
+  on('process.run', (_, e) => {
+    const stdout = e.argv.includes('--show-prefix') ? `${gitPrefix}\n` : git.join('\n')
+    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
   on('tool.register', () => ({ value: { tool: 'mcp__dispatch__run' } }))
   on('command.register', () => ({ value: { command: 'dispatch-panel' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
@@ -286,6 +289,10 @@ test('scope check: porcelain parsing and files no task owns', async () => {
   const run = sampleRun()
   run.baseline = ['notes.txt']
   expect(scopeViolations(['src/feature/x.ts', 'notes.txt', '.dispatch/runs/r/run.json', 'README.md'], run, '.dispatch')).toEqual(['README.md'])
+  // git reports repository-root paths; a project in a subfolder sees its own files bare and the rest as ../
+  expect(relativeToProject(['app/brief.md', 'app/src/x.ts', 'other/y.ts'], 'app/')).toEqual(['brief.md', 'src/x.ts', '../other/y.ts'])
+  expect(relativeToProject(['a/b/c.md', 'd.md'], 'a/b/')).toEqual(['c.md', '../../d.md'])
+  expect(relativeToProject(['x.md'], '')).toEqual(['x.md'])
 })
 
 test('data rule: an agent that read internal content loses web tools', async () => {
@@ -318,6 +325,21 @@ test('engine: a task that changed a file nobody owns fails the scope check; read
   const done = parse(await $.tool.call({ tool: 'mcp__dispatch__run', action: 'task', task: 't1', status: 'done' }))
   expect(done.scope_violations).toEqual(['package.json'])
   expect((done.retry as { allowed: boolean }).allowed).toBe(true)
+})
+
+test('engine: in a subfolder of a git repo, a task that wrote its own file passes the scope check', async ($, on) => {
+  const files = new Map<string, string>()
+  const git: string[] = []
+  stubEngine(on, files, [], git, { now: Date.UTC(2026, 10, 12, 10, 0, 0) }, 'cwd/')
+  on('agent.spawn', (_, e) => ({ model: e.model ?? 'inherit', agentId: 'a1' }))
+  on('tool.call', () => ({ result: 'ok' }))
+  await $.session.start({ cwd: '/p', surface: 'terminal', isInteractive: true })
+  parse(await $.tool.call({ tool: 'mcp__dispatch__run', action: 'start', objective: 'x', title: 'Brief', size: 'small' }))
+  parse(await $.tool.call({ tool: 'mcp__dispatch__run', action: 'plan', tasks: [{ id: 't1', role: 'researcher', title: 'r', paths: ['brief.md'] }] }))
+  await $.agent.spawn(spawnInput({ prompt: 'r', subagentType: 'dispatch:researcher', description: '[t1] r' }))
+  git.push('?? cwd/brief.md', ' M shared/config.json')
+  const done = parse(await $.tool.call({ tool: 'mcp__dispatch__run', action: 'task', task: 't1', status: 'done' }))
+  expect(done.scope_violations).toEqual(['../shared/config.json'])
 })
 
 // ---------- schedules ----------
