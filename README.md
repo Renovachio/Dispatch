@@ -22,7 +22,8 @@ Adaptive multi-agent orchestration for Claude Code. Give it any request (code, P
   - Only `dispatch:operator` can call tools that change things outside your machine, and only with arguments you approved exactly. Approval happens in a dialog the mod opens, never through the model. Each approval works once.
   - Shell commands that publish or push are blocked for the other roles.
   - Builders can edit only the paths their task owns.
-  - Researchers can't read internal connectors unless the run allows it.
+  - Data rule: researchers can't read internal connectors. Once any agent (or the lead) has read internal content, its web tools are switched off. You can allow internal content on the web for a run, but only in a dialog the mod opens, never through the model.
+  - Scope check: in git projects, when a task that owns files finishes, any file changed since the run started that no task owns (shell writes included) fails the task.
 - **Cost**: budgets in weighted tokens by run size (small 150k, medium 600k, large 2M, placeholders until evals tune them). At the cap Dispatch pauses and asks. Reports show tokens and an API-price $ equivalent.
 - **Panel**: `/dispatch-panel` opens a live view beside the chat with tasks, agents, model tiers, tokens, $ and budget.
 
@@ -59,11 +60,13 @@ claude plugin eval . --allow-tools Edit Write "Bash(python3:*)" "Bash(python:*)"
 
 Type-checking (`tsc -p .`) needs Node.js.
 
-### Eval results (2026-11-12, 3 runs per arm, Sonnet lead)
+### Eval results (2026-11-12, Sonnet lead)
 
-| Case | Dispatch | Plain Claude | Cost per run, Dispatch vs plain |
+| Case (runs per arm) | Dispatch | Plain Claude | Cost per run, Dispatch vs plain |
 |---|---|---|---|
-| feature-small (inline builder) | 1.00 | 1.00 | $0.10 vs $0.12 (0.83×) |
-| status-update (inline writer, no Slack connector in the sandbox) | 0.67 | 0.67 | $0.14 vs $0.10 (1.48×) |
+| feature-small (3), inline builder | 0.67 | 0.67 | $0.12 vs $0.13 (0.92×) |
+| status-update (3), inline writer, no Slack connector in the sandbox | 1.00 | 1.00 | $0.10 vs $0.11 (0.91×) |
+| prd-from-context (2) | 0.50 | 0.00 | $0.12 vs $0.20 (0.60×) |
+| research-report (2) | not graded (usage limit hit mid-run) | | |
 
-Before inline small tasks, feature-small cost 2.6× plain Claude ($0.34 vs $0.13). The prd-from-context and research-report cases have not been run yet.
+History: the first version cost 2.6× plain Claude on feature-small. Inline small tasks and the slimmer skill brought it under 1×. Judge votes on single runs are noisy, so read scores across runs.

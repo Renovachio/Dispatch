@@ -159,6 +159,29 @@ export function ownsPath(file: string, owned: readonly string[], project: string
   })
 }
 
+/** Paths from `git status --porcelain=v1 -uall` output. */
+export function parsePorcelain(out: string): string[] {
+  return out
+    .split('\n')
+    .filter(l => l.length > 3)
+    .map(l => {
+      const p = l.slice(3).split(' -> ').pop() ?? ''
+      return p.startsWith('"') && p.endsWith('"') ? p.slice(1, -1) : p
+    })
+}
+
+/**
+ * Files changed since the run started that no task owns (Dispatch's own folder excepted).
+ * A file already changed before the run is in the baseline and is not checked.
+ */
+export function scopeViolations(changed: readonly string[], run: Run, dispatchFolder: string): string[] {
+  const before = new Set(run.baseline ?? [])
+  const owned = Object.values(run.tasks).flatMap(t => t.paths)
+  return changed.filter(
+    f => !before.has(f) && !f.startsWith(`${dispatchFolder}/`) && !ownsPath(`${run.project}/${f}`, owned, run.project),
+  )
+}
+
 export function setPlan(run: Run, tasks: readonly TaskInput[], cfg: Config, now: number): Run {
   const next: Record<string, Task> = { ...run.tasks }
   const order = [...run.order]

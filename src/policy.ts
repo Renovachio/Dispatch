@@ -105,6 +105,15 @@ export function decide(run: Run, cfg: Config, call: Call): Decision {
     return { allow: false, reason: `Dispatch: this command acts outside the machine (${hit}). Propose it as an action in your result instead.` }
   }
 
+  // Data rule: once an agent has read internal content, it may not reach the web (exfiltration guard).
+  if (tool === 'WebFetch' || tool === 'WebSearch') {
+    const tainted = agentId ? run.agents[agentId]?.tainted : run.leadTainted
+    if (tainted && !run.allowInternalToWeb) {
+      return { allow: false, reason: 'Dispatch: this agent has read internal content in this run, so web tools are off for it (data rule). Give web research to a separate researcher task.' }
+    }
+    return { allow: true }
+  }
+
   if (!tool.startsWith('mcp__')) return { allow: true }
 
   // Browser: reading tools are free; acting tools need an approved browser session for the task.
@@ -130,6 +139,11 @@ export function decide(run: Run, cfg: Config, call: Call): Decision {
   return approval
     ? { allow: true, useApproval: approval.id }
     : { allow: false, reason: `Dispatch: ${tool} with these exact arguments was not approved. Run only the approved actions, unchanged.` }
+}
+
+/** An internal-connector read: an MCP read that is not the browser and not Dispatch's own tool. */
+export function isInternalRead(tool: string, cfg: Config): boolean {
+  return tool.startsWith('mcp__') && !tool.startsWith(BROWSER_PREFIX) && !isOwnTool(tool) && isReadMcp(tool, cfg)
 }
 
 export function destinationAllowed(target: string | undefined, cfg: Config): boolean {

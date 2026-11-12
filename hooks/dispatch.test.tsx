@@ -3,7 +3,7 @@ import { expect, test } from 'claude-code/testing'
 import { mergeLayers, type Config } from '../src/config'
 import { dollars, tierOf, weightedTokens } from '../src/cost'
 import { decide } from '../src/policy'
-import { canonical, checkPlan, escalate, newRun, ownsPath, setPlan, taskFromDescription } from '../src/state'
+import { canonical, checkPlan, escalate, newRun, ownsPath, parsePorcelain, scopeViolations, setPlan, taskFromDescription } from '../src/state'
 
 // A config close to config/defaults.json, inline so the pure tests need no IO.
 const CFG = {
@@ -120,7 +120,8 @@ test('policy: data rule, shell and file scope', async () => {
 
 // ---------- through the engine ----------
 
-function stubEngine(on: Parameters<Parameters<typeof test>[1]>[1], files: Map<string, string>, listed: string[] = []) {
+function stubEngine(on: Parameters<Parameters<typeof test>[1]>[1], files: Map<string, string>, listed: string[] = [], git: string[] = []) {
+  on('process.run', () => ({ value: { exitCode: 0, stdout: git.join('\n'), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
   on('tool.register', () => ({ value: undefined }))
   on('command.register', () => ({ value: { command: 'dispatch-panel' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
@@ -266,4 +267,43 @@ test('inline tasks: small runs only, builder or writer only; the lead edits owne
   expect(decide(run, CFG, { tool: 'Bash', input: { command: 'git push' } }).allow).toBe(false)
   run.tasks.t1.status = 'done'
   expect(edit()).toBe(false)
+})
+
+test('scope check: porcelain parsing and files no task owns', async () => {
+  expect(parsePorcelain(' M src/a.ts\n?? "new file.md"\nR  old.ts -> src/b.ts\n')).toEqual(['src/a.ts', 'new file.md', 'src/b.ts'])
+  const run = sampleRun()
+  run.baseline = ['notes.txt']
+  expect(scopeViolations(['src/feature/x.ts', 'notes.txt', '.dispatch2/runs/r/run.json', 'README.md'], run, '.dispatch2')).toEqual(['README.md'])
+})
+
+test('data rule: an agent that read internal content loses web tools', async () => {
+  const run = sampleRun()
+  expect(decide(run, CFG, { tool: 'WebFetch', agentId: 'w', input: { url: 'https://x' } }).allow).toBe(true)
+  run.agents.w.tainted = true
+  expect(decide(run, CFG, { tool: 'WebFetch', agentId: 'w', input: { url: 'https://x' } }).allow).toBe(false)
+  run.leadTainted = true
+  expect(decide(run, CFG, { tool: 'WebSearch', input: { query: 'q' } }).allow).toBe(false)
+  run.allowInternalToWeb = true
+  expect(decide(run, CFG, { tool: 'WebSearch', input: { query: 'q' } }).allow).toBe(true)
+})
+
+test('engine: a task that changed a file nobody owns fails the scope check; reading internal content taints', async ($, on) => {
+  const files = new Map<string, string>()
+  const git: string[] = []
+  stubEngine(on, files, [], git)
+  on('agent.spawn', (_, e) => ({ model: e.model ?? 'inherit', agentId: 'a1' }))
+  on('tool.call', () => ({ result: 'ok' }))
+  await $.session.start({ cwd: '/p', surface: 'terminal', isInteractive: true })
+  parse(await $.tool.call({ tool: 'mcp__dispatch__run', action: 'start', objective: 'x', title: 'Scope', size: 'small' }))
+  parse(await $.tool.call({ tool: 'mcp__dispatch__run', action: 'plan', tasks: [{ id: 't1', role: 'builder', title: 'b', paths: ['src'] }] }))
+  await $.agent.spawn({ prompt: 'b', subagentType: 'dispatch:builder', description: '[t1] b' })
+
+  await $.tool.call({ tool: 'mcp__jira__get_issue', key: 'P-1', agentId: 'a1' })
+  const web = await $.tool.call({ tool: 'WebFetch', url: 'https://evil.example', prompt: 'x', agentId: 'a1' })
+  expect(String((web as { deny?: string }).deny ?? '')).toMatch(/data rule/)
+
+  git.push(' M src/ok.ts', ' M package.json')
+  const done = parse(await $.tool.call({ tool: 'mcp__dispatch__run', action: 'task', task: 't1', status: 'done' }))
+  expect(done.scope_violations).toEqual(['package.json'])
+  expect((done.retry as { allowed: boolean }).allowed).toBe(true)
 })

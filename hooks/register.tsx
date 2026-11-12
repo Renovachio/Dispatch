@@ -6,7 +6,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { Role, Run, Size, TaskStatus } from '../types'
 import { loadConfig, type Config } from '../src/config'
 import { addUsage, dollars, formatTokens, tierOf, zeroUsage } from '../src/cost'
-import { callArgs, decide, destinationAllowed, isOwnTool } from '../src/policy'
+import { callArgs, decide, destinationAllowed, isInternalRead, isOwnTool } from '../src/policy'
 import {
   canonical,
   checkPlan,
@@ -15,9 +15,11 @@ import {
   loadRun,
   log,
   newRun,
+  parsePorcelain,
   runsDir,
   runUsage,
   saveRun,
+  scopeViolations,
   setPlan,
   taskFromDescription,
   type TaskInput,
@@ -51,6 +53,16 @@ async function mutate($: EngineInterface, fn: (run: Run, now: number) => Run): P
   })
   if (saved) await saveRun($, saved)
   return saved
+}
+
+/** Changed files in the project's git work tree, or undefined outside git. */
+async function gitChanged($: EngineInterface, project: string): Promise<string[] | undefined> {
+  try {
+    const r = await $.process.run(['git', 'status', '--porcelain=v1', '-uall'], { cwd: project, timeoutMs: 15000 })
+    return r.exitCode === 0 ? parsePorcelain(r.stdout) : undefined
+  } catch {
+    return undefined
+  }
 }
 
 /** Ask the person directly (never the model). A dismissed or unanswerable dialog counts as a no. */
@@ -153,6 +165,7 @@ async function handle($: EngineInterface, e: Record<string, unknown>): Promise<u
       )
       run.allowInternalToWeb = answer === 'Allow for this run'
     }
+    run.baseline = await gitChanged($, run.project)
     await update($, runAtom, () => run)
     await saveRun($, run)
     void $.ui.open({ id: PANE, title: 'Dispatch' })
@@ -206,10 +219,22 @@ async function handle($: EngineInterface, e: Record<string, unknown>): Promise<u
       const other = Object.values(run.tasks).find(t => t.inline && t.status === 'running' && t.id !== id)
       if (other) return { error: `inline task ${other.id} is still running; finish it first` }
     }
+    // Scope check: a task that changes files must not have touched anything no task owns.
+    let violations: string[] = []
+    let effective = status
+    let reason = typeof e.summary === 'string' ? e.summary : undefined
+    if (status === 'done' && run.baseline && run.tasks[id].paths.length > 0) {
+      const changed = await gitChanged($, run.project)
+      violations = changed ? scopeViolations(changed, run, c.storage.project) : []
+      if (violations.length) {
+        effective = 'failed'
+        reason = `changed files outside every task's owned paths: ${violations.slice(0, 10).join(', ')}. Revert them or ask the person.`
+      }
+    }
     let retry: { allowed: boolean; tier?: string } | undefined
     const next = await mutate($, r => {
       const t = r.tasks[id]
-      const failed = status === 'failed'
+      const failed = effective === 'failed'
       const attempts = failed ? t.attempts + 1 : t.attempts
       const canRetry = failed && attempts <= c.retries.max
       const tier = canRetry && c.retries.escalate ? escalate(t.tier ?? 'sonnet', c) : t.tier
@@ -221,19 +246,26 @@ async function handle($: EngineInterface, e: Record<string, unknown>): Promise<u
             ...r.tasks,
             [id]: {
               ...t,
-              status: canRetry ? 'planned' : status,
+              status: canRetry ? 'planned' : effective,
               attempts,
               tier,
-              summary: typeof e.summary === 'string' ? e.summary : t.summary,
+              summary: reason ?? t.summary,
               deliverables: Array.isArray(e.deliverables) ? (e.deliverables as string[]) : t.deliverables,
             },
           },
         },
         now,
-        `task ${id} ${status}${failed ? ` (attempt ${attempts})` : ''}`,
+        `task ${id} ${effective}${failed ? ` (attempt ${attempts})` : ''}${violations.length ? ' scope violation' : ''}`,
       )
     })
-    return { task: id, status: next!.tasks[id].status, retry, budget: report(next!, c).budget }
+    return {
+      task: id,
+      status: next!.tasks[id].status,
+      retry,
+      scope_violations: violations.length ? violations : undefined,
+      reason: violations.length ? reason : undefined,
+      budget: report(next!, c).budget,
+    }
   }
 
   if (action === 'approve') {
@@ -327,6 +359,17 @@ export const register: Register = on => {
     if (!verdict.allow) {
       await mutate($, (r, now) => log(r, now, `denied ${e.tool} (${e.agentId ? r.agents[e.agentId]?.role ?? 'agent' : 'lead'})`))
       return { deny: verdict.reason }
+    }
+    if (isInternalRead(e.tool, c)) {
+      const id = e.agentId
+      const already = id ? run.agents[id]?.tainted : run.leadTainted
+      if (!already) {
+        await mutate($, r =>
+          id && r.agents[id]
+            ? { ...r, agents: { ...r.agents, [id]: { ...r.agents[id], tainted: true } } }
+            : id ? r : { ...r, leadTainted: true },
+        )
+      }
     }
     if (verdict.useApproval) {
       const used = verdict.useApproval

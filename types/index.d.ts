@@ -40,6 +40,8 @@ export type AgentRec = {
   usage: Usage
   startedAt: number
   endedAt?: number
+  /** Has read internal-connector content in this run (blocks web tools unless the run allows it). */
+  tainted?: boolean
 }
 
 export type Approval = {
@@ -77,6 +79,10 @@ export type Run = {
   summary?: string
   /** Set at finish: the lead's last turn is still to be added to the cost. */
   leadPending?: boolean
+  /** The lead has read internal-connector content. */
+  leadTainted?: boolean
+  /** Files already changed in git when the run started (scope check baseline); absent outside git. */
+  baseline?: string[]
 }
 
 declare module 'claude-code' {
